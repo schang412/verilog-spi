@@ -1,6 +1,6 @@
 # Verilog SPI
 
-[![Build Status](https://github.com/schang412/verilog-spi/workflows/Regression%20Tests/badge.svg?branch=master)](https://github.com/schang412/verilog-spi/actions/)
+[![Regression Tests](https://github.com/schang412/verilog-spi/actions/workflows/regression-tests.yml/badge.svg)](https://github.com/schang412/verilog-spi/actions/workflows/regression-tests.yml)
 
 GitHub repository: https://github.com/schang412/verilog-spi
 
