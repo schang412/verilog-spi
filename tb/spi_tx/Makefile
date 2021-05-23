@@ -1,0 +1,52 @@
+
+
+TOPLEVEL_LANG = verilog
+
+SIM ?= icarus
+WAVES ?= 1
+
+COCOTB_HDL_TIMEUNIT = 1ns
+COCOTB_HDL_TIMEPRECISION = 1ps
+
+DUT      = spi_tx
+TOPLEVEL = $(DUT)
+MODULE   = test_$(DUT)
+
+RTL_DIR = $(shell pwd)/../../rtl
+
+VERILOG_FILES = $(DUT).sv
+
+VERILOG_SOURCES = $(patsubst %, $(RTL_DIR)/%, $(VERILOG_FILES))
+
+PARAMETERS = ../parameters.ini
+
+export PARAM_DATA_WIDTH ?= $(shell awk -F "=" '/DATA_WIDTH/ {print $$2}' $(PARAMETERS))
+export PARAM_SCLK_PRESCALE ?= $(shell awk -F "=" '/SCLK_PRESCALE/ {print $$2}' $(PARAMETERS))
+export PARAM_SPI_MODE ?= $(shell awk -F "=" '/SPI_MODE/ {print $$2}' $(PARAMETERS))
+
+ifeq ($(SIM), icarus)
+	PLUSARGS += -fst
+
+	COMPILE_ARGS += -P $(TOPLEVEL).DATA_WIDTH=$(PARAM_DATA_WIDTH)
+	COMPILE_ARGS += -P $(TOPLEVEL).SCLK_PRESCALE=$(PARAM_SCLK_PRESCALE)
+	COMPILE_ARGS += -P $(TOPLEVEL).SPI_MODE=$(PARAM_SPI_MODE)
+
+	ifeq ($(WAVES), 1)
+		VERILOG_SOURCES += iverilog_dump.v
+		COMPILE_ARGS += -s iverilog_dump
+	endif
+endif
+
+include $(shell cocotb-config --makefiles)/Makefile.sim
+
+iverilog_dump.v:
+	echo 'module iverilog_dump();' > $@
+	echo 'initial begin' >> $@
+	echo '    $$dumpfile("$(TOPLEVEL).fst");' >> $@
+	echo '    $$dumpvars(0, $(TOPLEVEL));' >> $@
+	echo 'end' >> $@
+	echo 'endmodule' >> $@
+
+clean::
+	@rm -rf iverilog_dump.v
+	@rm -rf dump.fst $(TOPLEVEL).fst
