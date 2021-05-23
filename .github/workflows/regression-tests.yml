@@ -5,7 +5,8 @@ on: [push, pull_request]
 jobs:
   build:
     name: Python ${{matrix.python-version}}
-    runs-on: ubuntu-20.04
+    # swapped to macos for now since iverilog11 is installed by default there
+    runs-on: macos-10.15
 
     strategy:
       matrix:
@@ -21,7 +22,7 @@ jobs:
 
     - name: Install Icarus Verilog
       run: |
-        sudo apt install -y --no-install-recommends iverilog
+        brew install icarus-verilog
 
     - name: Install Python dependencies
       run: |
