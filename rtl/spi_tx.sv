@@ -3,9 +3,7 @@
 
 module spi_tx #
 (
-    parameter DATA_WIDTH = 8, // MAX=64
-    parameter SCLK_PRESCALE = 4,
-    parameter SPI_MODE = 0
+    parameter DATA_WIDTH = 8 // MAX=64
 )
 (
     input  wire clk,
@@ -17,36 +15,39 @@ module spi_tx #
     output wire                     s_axis_tready,
 
     // Interface
-    // txd is valid on sclk rising edge
     output wire                     sclk,
     output wire                     txd,
+
+    // Configuration
+    input  wire [1:0]               spi_mode,
+    input  wire [7:0]               sclk_prescale,
 
     // Status
     output wire                     busy
 );
 
-localparam CPOL = (SPI_MODE == 2) | (SPI_MODE == 3);
-localparam CPHA = (SPI_MODE == 1) | (SPI_MODE == 2);
 
-reg txd_reg = 0;
 reg busy_reg = 0;
+assign s_axis_tready = !busy_reg;
+assign busy = busy_reg;
 
-reg [SCLK_PRESCALE-1:0] prescale_counter_reg = 0;
+reg [7:0] prescale_counter_reg = 0;
 
 reg [DATA_WIDTH-1:0] data_reg = 0;
 reg [5:0] bit_cnt = 0;
 
-reg sclk_reg = CPOL;
+wire cpol;
+wire cpha;
+assign cpol = (spi_mode == 2) | (spi_mode == 3);
+assign cpha = (spi_mode == 1) | (spi_mode == 2);
 
+reg sclk_reg = cpol;
+assign sclk = sclk_reg;
 
-assign s_axis_tready = !busy_reg;
+reg txd_reg = 0;
 assign txd = txd_reg;
 
-assign busy = busy_reg;
-
 enum reg [1:0] {IDLE, SHIFT_BIT, PUT_ON_WIRE, FINAL_BIT} tx_state = IDLE;
-
-assign sclk = sclk_reg;
 
 always_ff @(posedge clk) begin
     if (rst) begin
@@ -55,7 +56,7 @@ always_ff @(posedge clk) begin
         data_reg <= 0;
         bit_cnt <= 0;
         tx_state <= IDLE;
-        sclk_reg <= CPOL;
+        sclk_reg <= cpol;
     end else begin
 
         if (s_axis_tvalid==1 && s_axis_tready==1) begin
@@ -64,13 +65,14 @@ always_ff @(posedge clk) begin
         end
 
         prescale_counter_reg <= prescale_counter_reg + 1;
-        if (prescale_counter_reg == 0) begin
+        if (prescale_counter_reg == (sclk_prescale >> 1)) begin
+            prescale_counter_reg <= 1;
             case (tx_state)
                 IDLE: begin
                     txd_reg <= 0;
-                    sclk_reg <= CPOL;
+                    sclk_reg <= cpol;
                     if (busy_reg == 1) begin
-                        if (CPOL != CPHA) sclk_reg <= CPHA;
+                        if (cpol != cpha) sclk_reg <= cpha;
                         txd_reg <= data_reg[DATA_WIDTH-1];
                         bit_cnt <= 1;
                         tx_state <= SHIFT_BIT;
@@ -78,7 +80,7 @@ always_ff @(posedge clk) begin
                 end
                 SHIFT_BIT: begin
                     data_reg <= data_reg << 1;
-                    sclk_reg <= !CPHA;
+                    sclk_reg <= !cpha;
                     if (bit_cnt == DATA_WIDTH) begin
                         tx_state <= FINAL_BIT;
                     end else begin
@@ -87,12 +89,12 @@ always_ff @(posedge clk) begin
                 end
                 PUT_ON_WIRE: begin
                     tx_state <= SHIFT_BIT;
-                    sclk_reg <= CPHA;
+                    sclk_reg <= cpha;
                     txd_reg <= data_reg[DATA_WIDTH-1];
                     bit_cnt <= bit_cnt + 1;
                 end
                 FINAL_BIT: begin
-                    if (CPOL == CPHA) sclk_reg <= CPHA;
+                    if (cpol == cpha) sclk_reg <= cpha;
                     if (busy_reg == 1) begin
                         tx_state <= IDLE;
                         txd_reg <= data_reg[DATA_WIDTH-1];
@@ -104,6 +106,5 @@ always_ff @(posedge clk) begin
         end
     end
 end
-
 
 endmodule : spi_tx

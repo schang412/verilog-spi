@@ -2,9 +2,7 @@
 
 module spi_master #
 (
-    parameter DATA_WIDTH = 8, // max = 64
-    parameter SCLK_PRESCALE = 4,
-    parameter SPI_MODE = 0 // mode = {0, 1, 2, 3}
+    parameter DATA_WIDTH = 8 // max = 64
 )
 (
     input  wire                  clk,
@@ -35,6 +33,12 @@ module spi_master #
     input  wire                  miso,
 
     /*
+     * Configuration
+     */
+    input  wire [1:0]            spi_mode,
+    input  wire [7:0]            sclk_prescale,
+
+    /*
      * Status
      */
     output wire                  tx_busy,
@@ -46,8 +50,7 @@ wire sclk_int;
 assign sclk = sclk_int;
 
 spi_rx #(
-    .DATA_WIDTH(DATA_WIDTH),
-    .SPI_MODE(SPI_MODE)
+    .DATA_WIDTH(DATA_WIDTH)
 ) spi_rx_inst (
     .clk(clk),
     .rst(rst),
@@ -55,6 +58,8 @@ spi_rx #(
     .m_axis_tdata  (m_axis_tdata),
     .m_axis_tvalid (m_axis_tvalid),
     .m_axis_tready (m_axis_tready),
+
+    .spi_mode      (spi_mode),
 
     .sclk          (sclk_int),
     .rxd           (miso),
@@ -64,9 +69,7 @@ spi_rx #(
 );
 
 spi_tx #(
-    .DATA_WIDTH(DATA_WIDTH),
-    .SCLK_PRESCALE(SCLK_PRESCALE),
-    .SPI_MODE(SPI_MODE)
+    .DATA_WIDTH(DATA_WIDTH)
 ) spi_tx_inst (
     .clk(clk),
     .rst(rst),
@@ -74,6 +77,9 @@ spi_tx #(
     .s_axis_tdata  (s_axis_tdata),
     .s_axis_tvalid (s_axis_tvalid),
     .s_axis_tready (s_axis_tready),
+
+    .spi_mode      (spi_mode),
+    .sclk_prescale (sclk_prescale),
 
     .sclk          (sclk_int),
     .txd           (mosi),

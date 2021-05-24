@@ -20,7 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from buffer import BufferSink
 
 class TB(object):
-    def __init__(self, dut):
+    def __init__(self, dut, spi_mode=0):
         self.dut = dut
 
         self.log = logging.getLogger("cocotb.tb")
@@ -29,14 +29,14 @@ class TB(object):
         cocotb.fork(Clock(dut.clk, 4, units="ns").start())
 
         spi_mode_cpha_map = {
-            "0": 0,
-            "1": 1,
-            "2": 1,
-            "3": 0
+            0: 0,
+            1: 1,
+            2: 1,
+            3: 0
         }
 
         self.source = AxiStreamSource(AxiStreamBus.from_prefix(dut, "s_axis"), dut.clk, dut.rst)
-        self.sink = BufferSink(dut.sclk, dut.txd, bits=int(os.environ["PARAM_DATA_WIDTH"]), sclk_phase=spi_mode_cpha_map[os.environ["PARAM_SPI_MODE"]])
+        self.sink = BufferSink(dut.sclk, dut.txd, bits=int(os.environ["PARAM_DATA_WIDTH"]), sclk_phase=spi_mode_cpha_map[spi_mode])
 
     async def reset(self):
         self.dut.rst.setimmediatevalue(0)
@@ -51,9 +51,13 @@ class TB(object):
 
 
 
-async def run_test(dut, payload_data=None, payload_lengths=None):
-    tb = TB(dut)
+async def run_test(dut, payload_data=None, payload_lengths=None, sclk_prescale=None, spi_mode=None):
+    tb = TB(dut, spi_mode)
     await tb.reset()
+
+
+    dut.sclk_prescale <= sclk_prescale
+    dut.spi_mode <= spi_mode
 
     for test_data in [payload_data(x) for x in payload_lengths()]:
         await tb.source.send(test_data)
@@ -80,6 +84,8 @@ if cocotb.SIM_NAME:
     factory = TestFactory(run_test)
     factory.add_option("payload_lengths", [size_list])
     factory.add_option("payload_data", [incrementing_payload])
+    factory.add_option("sclk_prescale", [2, 4])
+    factory.add_option("spi_mode", [0, 1, 2, 3])
     factory.generate_tests()
 
 
@@ -87,9 +93,8 @@ if cocotb.SIM_NAME:
 tests_dir = os.path.dirname(__file__)
 rtl_dir = os.path.abspath(os.path.join(tests_dir, '../../rtl'))
 
-@pytest.mark.parametrize("spi_mode", [0, 1, 2, 3])
 @pytest.mark.parametrize("data_width", [8, 16, 32])
-def test_spi_tx(request, data_width, spi_mode):
+def test_spi_tx(request, data_width):
     dut = "spi_tx"
     module = os.path.splitext(os.path.basename(__file__))[0]
     toplevel = dut
@@ -106,7 +111,6 @@ def test_spi_tx(request, data_width, spi_mode):
 
     # replace the parametrized parameters
     parameters["DATA_WIDTH"] = data_width
-    parameters["SPI_MODE"] = spi_mode
 
     extra_env = {f'PARAM_{k}': str(v) for k, v in parameters.items()}
 

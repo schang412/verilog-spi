@@ -21,15 +21,11 @@ VERILOG_SOURCES = $(patsubst %, $(RTL_DIR)/%, $(VERILOG_FILES))
 PARAMETERS = ../parameters.ini
 
 export PARAM_DATA_WIDTH ?= $(shell awk -F "=" '/DATA_WIDTH/ {print $$2}' $(PARAMETERS))
-export PARAM_SCLK_PRESCALE ?= $(shell awk -F "=" '/SCLK_PRESCALE/ {print $$2}' $(PARAMETERS))
-export PARAM_SPI_MODE ?= $(shell awk -F "=" '/SPI_MODE/ {print $$2}' $(PARAMETERS))
 
 ifeq ($(SIM), icarus)
 	PLUSARGS += -fst
 
 	COMPILE_ARGS += -P $(TOPLEVEL).DATA_WIDTH=$(PARAM_DATA_WIDTH)
-	COMPILE_ARGS += -P $(TOPLEVEL).SCLK_PRESCALE=$(PARAM_SCLK_PRESCALE)
-	COMPILE_ARGS += -P $(TOPLEVEL).SPI_MODE=$(PARAM_SPI_MODE)
 
 	ifeq ($(WAVES), 1)
 		VERILOG_SOURCES += iverilog_dump.v

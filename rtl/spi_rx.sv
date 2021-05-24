@@ -3,8 +3,7 @@
 
 module spi_rx #
 (
-    parameter DATA_WIDTH = 8,
-    parameter SPI_MODE = 0
+    parameter DATA_WIDTH = 8 // MAX=64
 )
 (
     input  wire clk,
@@ -24,29 +23,33 @@ module spi_rx #
     input  wire                     rxd,
 
     /*
+     * Configuration
+     */
+    input wire [1:0]                spi_mode,
+
+    /*
      * Status
      */
     output wire                     busy,
     output wire                     overrun_error
 );
 
-localparam CPHA = (SPI_MODE == 1) | (SPI_MODE == 2);
-
-reg [DATA_WIDTH-1:0] m_axis_tdata_reg = 0;
-reg m_axis_tvalid_reg = 0;
+wire cpha;
+assign cpha = (spi_mode == 1) | (spi_mode == 2);
 
 reg sclk_last_reg = 0;
 reg rxd_reg = 1;
 
-reg busy_reg = 0;
-reg overrun_error_reg = 0;
-
 reg [DATA_WIDTH-1:0] data_reg = 0;
 reg [5:0] bit_cnt = 0;
 
+reg [DATA_WIDTH-1:0] m_axis_tdata_reg = 0;
+reg m_axis_tvalid_reg = 0;
 assign m_axis_tdata = m_axis_tdata_reg;
 assign m_axis_tvalid = m_axis_tvalid_reg;
 
+reg busy_reg = 0;
+reg overrun_error_reg = 0;
 assign busy = busy_reg;
 assign overrun_error = overrun_error_reg;
 
@@ -69,8 +72,8 @@ always_ff @(posedge clk) begin
             bit_cnt <= 0;
         end
 
-        // sclk rising edge
-        if ((sclk_last_reg == CPHA) && (sclk == !CPHA)) begin
+        // sclk sampling edge
+        if ((sclk_last_reg == cpha) && (sclk == !cpha)) begin
             busy_reg <= 1;
 
             data_reg <= {data_reg[DATA_WIDTH-2:0], rxd_reg};
