@@ -20,12 +20,12 @@ VERILOG_SOURCES = $(patsubst %, $(RTL_DIR)/%, $(VERILOG_FILES))
 
 PARAMETERS = ../parameters.ini
 
-export PARAM_DATA_WIDTH ?= $(shell awk -F "=" '/DATA_WIDTH/ {print $$2}' $(PARAMETERS))
+export PARAM_AXIS_DATA_WIDTH ?= $(shell awk -F "=" '/AXIS_DATA_WIDTH/ {print $$2}' $(PARAMETERS))
 
 ifeq ($(SIM), icarus)
 	PLUSARGS += -fst
 
-	COMPILE_ARGS += -P $(TOPLEVEL).DATA_WIDTH=$(PARAM_DATA_WIDTH)
+	COMPILE_ARGS += -P $(TOPLEVEL).AXIS_DATA_WIDTH=$(PARAM_AXIS_DATA_WIDTH)
 
 	ifeq ($(WAVES), 1)
 		VERILOG_SOURCES += iverilog_dump.v
@@ -46,3 +46,4 @@ iverilog_dump.v:
 clean::
 	@rm -rf iverilog_dump.v
 	@rm -rf dump.fst $(TOPLEVEL).fst
+	@rm -rf results.xml

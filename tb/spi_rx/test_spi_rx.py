@@ -20,7 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from buffer import BufferSource
 
 class TB(object):
-    def __init__(self, dut, spi_mode):
+    def __init__(self, dut, spi_mode, spi_word_width):
         self.dut = dut
 
         self.log = logging.getLogger("cocotb.tb")
@@ -42,7 +42,7 @@ class TB(object):
             3: 0
         }
 
-        self.source = BufferSource(dut.clk, dut.sclk, dut.rxd, bits=int(os.environ["PARAM_DATA_WIDTH"]), sclk_pol=spi_mode_cpol_map[spi_mode], sclk_phase=spi_mode_cpha_map[spi_mode])
+        self.source = BufferSource(dut.clk, dut.sclk, dut.rxd, bits=spi_word_width, sclk_pol=spi_mode_cpol_map[spi_mode], sclk_phase=spi_mode_cpha_map[spi_mode])
         self.sink = AxiStreamSink(AxiStreamBus.from_prefix(dut, "m_axis"), dut.clk, dut.rst)
 
 
@@ -59,10 +59,11 @@ class TB(object):
 
 
 
-async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None):
-    tb = TB(dut, spi_mode)
+async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None, spi_word_width=None):
+    tb = TB(dut, spi_mode, spi_word_width)
     await tb.reset()
 
+    dut.spi_word_width <= spi_word_width
     dut.spi_mode <= spi_mode
 
     for test_data in [payload_data(x) for x in payload_lengths()]:
@@ -92,6 +93,7 @@ if cocotb.SIM_NAME:
     factory.add_option("payload_lengths", [size_list])
     factory.add_option("payload_data", [incrementing_payload])
     factory.add_option("spi_mode", [0, 1, 2, 3])
+    factory.add_option("spi_word_width", [8, 16, 32])
     factory.generate_tests()
 
 
@@ -99,8 +101,8 @@ if cocotb.SIM_NAME:
 tests_dir = os.path.dirname(__file__)
 rtl_dir = os.path.abspath(os.path.join(tests_dir, '../../rtl'))
 
-@pytest.mark.parametrize("data_width", [8, 16, 32])
-def test_spi_tx(request, data_width):
+@pytest.mark.parametrize("axis_data_width", [8, 16, 32])
+def test_spi_tx(request, axis_data_width):
     dut = "spi_rx"
     module = os.path.splitext(os.path.basename(__file__))[0]
     toplevel = dut
@@ -116,7 +118,7 @@ def test_spi_tx(request, data_width):
     parameters = config._sections['default']
 
     # replace the parametrized parameters
-    parameters["DATA_WIDTH"] = data_width
+    parameters["AXIS_DATA_WIDTH"] = axis_data_width
 
     extra_env = {f'PARAM_{k}': str(v) for k, v in parameters.items()}
 
