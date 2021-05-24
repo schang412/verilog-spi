@@ -49,7 +49,7 @@ reg m_axis_tvalid_reg = 0;
 assign m_axis_tdata = m_axis_tdata_reg;
 assign m_axis_tvalid = m_axis_tvalid_reg;
 
-reg spi_word_width_reg = AXIS_DATA_WIDTH;
+reg [5:0] spi_word_width_reg = AXIS_DATA_WIDTH;
 
 reg busy_reg = 0;
 reg overrun_error_reg = 0;

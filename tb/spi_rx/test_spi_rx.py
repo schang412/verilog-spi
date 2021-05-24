@@ -88,12 +88,16 @@ def size_list():
 def incrementing_payload(length):
     return bytearray(itertools.islice(itertools.cycle(range(256)), length))
 
+def spi_word_width_list():
+    return list([x for x in [8, 16, 32] if x <= int(os.environ["PARAM_AXIS_DATA_WIDTH"])])
+
 if cocotb.SIM_NAME:
     factory = TestFactory(run_test)
     factory.add_option("payload_lengths", [size_list])
     factory.add_option("payload_data", [incrementing_payload])
-    factory.add_option("spi_mode", [0, 1, 2, 3])
-    factory.add_option("spi_word_width", [8, 16, 32])
+    # factory.add_option("spi_mode", [0, 1, 2, 3])
+    factory.add_option("spi_mode", [0])
+    factory.add_option("spi_word_width", spi_word_width_list())
     factory.generate_tests()
 
 
