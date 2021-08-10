@@ -1,5 +1,5 @@
 
-SUBDIRS = spi_tx spi_rx
+SUBDIRS = spi_tx spi_rx spi_master
 
 .PHONY: all clean
 

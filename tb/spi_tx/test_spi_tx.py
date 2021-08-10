@@ -15,9 +15,16 @@ from cocotb.triggers import RisingEdge, Timer, Event
 from cocotb.regression import TestFactory
 
 from cocotbext.axi import AxiStreamSource, AxiStreamBus
+from cocotbext.spi import SpiSignals, SpiConfig, SpiMaster
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from buffer import BufferSink
+class FakeSignal():
+    def __init__(self):
+        self.value = lambda: None
+        setattr(self.value, "integer", 0)
+    def __le__(self, other):
+        pass
+    def setimmediatevalue(self, value):
+        pass
 
 class TB(object):
     def __init__(self, dut, spi_mode=0, spi_word_width=8):
@@ -28,15 +35,23 @@ class TB(object):
 
         cocotb.fork(Clock(dut.clk, 4, units="ns").start())
 
-        spi_mode_cpha_map = {
-            0: 0,
-            1: 1,
-            2: 1,
-            3: 0
-        }
+        spi_signals = SpiSignals(
+            sclk = dut.sclk,
+            mosi = FakeSignal(),
+            miso = dut.txd,
+            cs =   dut.tx_enable,
+            cs_active_low = False
+        )
+
+        spi_config = SpiConfig(
+            word_width = spi_word_width,
+            cpol = bool(spi_mode in [2, 3]),
+            cpha = bool(spi_mode in [1, 2]),
+            frame_spacing_ns = 10
+        )
 
         self.source = AxiStreamSource(AxiStreamBus.from_prefix(dut, "s_axis"), dut.clk, dut.rst)
-        self.sink = BufferSink(dut.sclk, dut.txd, bits=spi_word_width, sclk_phase=spi_mode_cpha_map[spi_mode])
+        self.sink = SpiMaster(spi_signals, spi_config)
 
     async def reset(self):
         self.dut.rst.setimmediatevalue(0)
@@ -51,23 +66,24 @@ class TB(object):
 
 
 
-async def run_test(dut, payload_data=None, payload_lengths=None, sclk_prescale=None, spi_mode=None, spi_word_width=None):
+async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None, spi_word_width=None):
     tb = TB(dut, spi_mode, spi_word_width)
     await tb.reset()
 
-    dut.sclk_prescale <= sclk_prescale
     dut.spi_mode <= spi_mode
     dut.spi_word_width <= spi_word_width
 
     for test_data in [payload_data(x) for x in payload_lengths()]:
         await tb.source.send(test_data)
-        rx_data = bytearray()
+        
+        # to test the interface, we use a SpiMaster interface,
+        # the dut (tx) will plug into the miso
+        # to get sclk running, we will need to do a write
+        # then to get the data that was sent, we will read.
+        await tb.sink.write(test_data)
+        rx_data = await tb.sink.read()
 
-        while len(rx_data) < len(test_data):
-            rx_data.extend(await tb.sink.read())
-
-        assert rx_data == test_data
-        assert tb.sink.empty()
+        assert list(rx_data) == list(test_data)
 
         await Timer(2, units="us")
 
@@ -87,7 +103,6 @@ if cocotb.SIM_NAME:
     factory = TestFactory(run_test)
     factory.add_option("payload_lengths", [size_list])
     factory.add_option("payload_data", [incrementing_payload])
-    factory.add_option("sclk_prescale", [2, 4])
     factory.add_option("spi_mode", [0, 1, 2, 3])
     factory.add_option("spi_word_width", spi_word_width_list())
     factory.generate_tests()

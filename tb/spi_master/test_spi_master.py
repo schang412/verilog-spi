@@ -14,17 +14,9 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer, Event
 from cocotb.regression import TestFactory
 
-from cocotbext.axi import AxiStreamSink, AxiStreamBus
-from cocotbext.spi import SpiSignals, SpiConfig, SpiMaster
-
-class FakeSignal():
-    def __init__(self):
-        self.value = lambda: None
-        setattr(self.value, "integer", 0)
-    def __le__(self, other):
-        pass
-    def setimmediatevalue(self, value):
-        pass
+from cocotbext.axi import AxiStreamSource, AxiStreamSink, AxiStreamBus
+from cocotbext.spi import SpiSignals, SpiConfig
+from cocotbext.spi.devices.generic import SpiSlaveLoopback
 
 class TB(object):
     def __init__(self, dut, spi_mode, spi_word_width):
@@ -37,9 +29,9 @@ class TB(object):
 
         spi_signals = SpiSignals(
             sclk = dut.sclk,
-            mosi = dut.rxd,
-            miso = FakeSignal(),
-            cs =   dut.enable_capture,
+            mosi = dut.mosi,
+            miso = dut.miso,
+            cs   = dut.bus_active,
             cs_active_low = False
         )
 
@@ -47,11 +39,13 @@ class TB(object):
             word_width = spi_word_width,
             cpol = bool(spi_mode in [2, 3]),
             cpha = bool(spi_mode in [1, 2]),
-            frame_spacing_ns = 10
+            msb_first = True,
+            frame_spacing_ns = 1
         )
 
+        self.spi_loopback = SpiSlaveLoopback(spi_signals, spi_config)
 
-        self.source = SpiMaster(spi_signals, spi_config)
+        self.source = AxiStreamSource(AxiStreamBus.from_prefix(dut, "s_axis"), dut.clk, dut.rst)
         self.sink = AxiStreamSink(AxiStreamBus.from_prefix(dut, "m_axis"), dut.clk, dut.rst)
 
 
@@ -72,6 +66,7 @@ async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None, 
     tb = TB(dut, spi_mode, spi_word_width)
     await tb.reset()
 
+    dut.sclk_prescale <= 4
     dut.spi_word_width <= spi_word_width
     dut.spi_mode <= spi_mode
 
@@ -83,7 +78,8 @@ async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None, 
         while len(rx_data) < len(test_data):
             rx_data.extend(await tb.sink.read())
 
-        assert rx_data == test_data
+        assert rx_data[1:] == test_data[:-1]
+        # assert tb.sink.empty()
 
         await Timer(2, units="us")
 
@@ -104,7 +100,7 @@ if cocotb.SIM_NAME:
     factory.add_option("payload_lengths", [size_list])
     factory.add_option("payload_data", [incrementing_payload])
     # factory.add_option("spi_mode", [0, 1, 2, 3])
-    factory.add_option("spi_mode", [0])
+    factory.add_option("spi_mode", [1])
     factory.add_option("spi_word_width", spi_word_width_list())
     factory.generate_tests()
 
@@ -115,12 +111,14 @@ rtl_dir = os.path.abspath(os.path.join(tests_dir, '../../rtl'))
 
 @pytest.mark.parametrize("axis_data_width", [8, 16, 32])
 def test_spi_tx(request, axis_data_width):
-    dut = "spi_rx"
+    dut = "spi_master"
     module = os.path.splitext(os.path.basename(__file__))[0]
     toplevel = dut
 
     verilog_files = [
-        f"{dut}.sv"
+        f"{dut}.sv",
+        "spi_rx.sv",
+        "spi_tx.sv"
     ]
     verilog_sources = [os.path.join(rtl_dir, x) for x in verilog_files]
 

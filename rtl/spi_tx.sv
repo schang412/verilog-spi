@@ -6,6 +6,7 @@ module spi_tx #
     parameter AXIS_DATA_WIDTH = 8 // MAX=64
 )
 (
+    input  wire sclk,
     input  wire clk,
     input  wire rst,
 
@@ -15,12 +16,11 @@ module spi_tx #
     output wire                       s_axis_tready,
 
     // Interface
-    output wire                     sclk,
     output wire                     txd,
+    input logic                     tx_enable,
 
     // Configuration
     input  wire [1:0]               spi_mode,
-    input  wire [7:0]               sclk_prescale,
     input  wire [5:0]               spi_word_width, // sampled on an AXIS transaction
 
     // Status
@@ -32,25 +32,51 @@ reg busy_reg = 0;
 assign s_axis_tready = !busy_reg;
 assign busy = busy_reg;
 
-reg [7:0] prescale_counter_reg = 0;
-
 reg [5:0] spi_word_width_reg = AXIS_DATA_WIDTH;
 reg [AXIS_DATA_WIDTH-1:0] data_reg = 0;
 reg [5:0] bit_cnt = 0;
 
 wire cpol;
 wire cpha;
-assign cpol = (spi_mode == 2) | (spi_mode == 3);
-assign cpha = (spi_mode == 1) | (spi_mode == 2);
+logic phased_sclk;
 
-reg sclk_reg = cpol;
-assign sclk = sclk_reg;
+assign cpol = (spi_mode === 2) | (spi_mode === 3);
+assign cpha = (spi_mode === 1) | (spi_mode === 2);
+assign phased_sclk = sclk ^ !cpha;
 
 reg txd_reg = 0;
 assign txd = txd_reg;
 
-enum reg [1:0] {IDLE, SHIFT_BIT, PUT_ON_WIRE, FINAL_BIT} tx_state = IDLE;
+enum reg [1:0] {IDLE, SHIFT_BIT} tx_state = IDLE;
 
+always_ff @(posedge phased_sclk) begin //Phased clk incorporates cpha, which means even if it says posedge, if cpha == 1, it would enter this always_ff at negedge cpha
+    if (tx_enable) begin
+        case (tx_state)
+            IDLE: begin
+                if (busy_reg) begin
+                    busy_reg <= 1;
+                    tx_state <= SHIFT_BIT;
+                    //Transmitting the first bit in IDLE to have enough clock edges
+                    txd_reg <= data_reg[spi_word_width_reg - 1];
+                    data_reg <= data_reg << 1;
+                    bit_cnt <= bit_cnt + 1;
+                end
+            end
+            SHIFT_BIT: begin
+                //Shift all bits at posedge phased_sclk
+                txd_reg <= data_reg[spi_word_width_reg - 1];
+                data_reg <= data_reg << 1;
+                bit_cnt <= bit_cnt + 1;
+                if (bit_cnt == spi_word_width_reg - 1) begin
+                    tx_state <= IDLE;
+                    busy_reg <= 0;
+                    bit_cnt <= 0;
+                end
+            end
+            default: tx_state <= IDLE;
+        endcase
+    end    
+end
 always_ff @(posedge clk) begin
     if (rst) begin
         txd_reg <= 0;
@@ -58,55 +84,11 @@ always_ff @(posedge clk) begin
         data_reg <= 0;
         bit_cnt <= 0;
         tx_state <= IDLE;
-        sclk_reg <= cpol;
-    end else begin
-
-        if (s_axis_tvalid==1 && s_axis_tready==1) begin
-            spi_word_width_reg <= spi_word_width;
-            data_reg <= s_axis_tdata;
-            busy_reg <= 1;
-        end
-
-        prescale_counter_reg <= prescale_counter_reg + 1;
-        if (prescale_counter_reg == (sclk_prescale >> 1)) begin
-            prescale_counter_reg <= 1;
-            case (tx_state)
-                IDLE: begin
-                    txd_reg <= 0;
-                    sclk_reg <= cpol;
-                    if (busy_reg == 1) begin
-                        if (cpol != cpha) sclk_reg <= cpha;
-                        txd_reg <= data_reg[spi_word_width-1];
-                        bit_cnt <= 1;
-                        tx_state <= SHIFT_BIT;
-                    end
-                end
-                SHIFT_BIT: begin
-                    data_reg <= data_reg << 1;
-                    sclk_reg <= !cpha;
-                    if (bit_cnt == spi_word_width_reg) begin
-                        tx_state <= FINAL_BIT;
-                    end else begin
-                        tx_state <= PUT_ON_WIRE;
-                    end
-                end
-                PUT_ON_WIRE: begin
-                    tx_state <= SHIFT_BIT;
-                    sclk_reg <= cpha;
-                    txd_reg <= data_reg[spi_word_width-1];
-                    bit_cnt <= bit_cnt + 1;
-                end
-                FINAL_BIT: begin
-                    if (cpol == cpha) sclk_reg <= cpha;
-                    if (busy_reg == 1) begin
-                        tx_state <= IDLE;
-                        txd_reg <= data_reg[spi_word_width-1];
-                        busy_reg <= 0;
-                    end else tx_state <= IDLE;
-                end
-                default: tx_state <= IDLE;
-            endcase
-        end
+    end
+    if (s_axis_tvalid && s_axis_tready) begin // If enable
+        spi_word_width_reg <= spi_word_width;
+        data_reg <= s_axis_tdata;
+        busy_reg <= 1; // s_axis_tready <= 0;
     end
 end
 
