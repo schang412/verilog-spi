@@ -15,14 +15,10 @@ MODULE   = test_$(DUT)
 RTL_DIR = $(shell pwd)/../../rtl
 
 VERILOG_FILES = $(DUT).sv
-VERILOG_FILES += spi_rx.sv
-VERILOG_FILES += spi_tx.sv
 
 VERILOG_SOURCES = $(patsubst %, $(RTL_DIR)/%, $(VERILOG_FILES))
 
-PARAMETERS = ../parameters.ini
-
-export PARAM_AXIS_DATA_WIDTH ?= $(shell awk -F "=" '/AXIS_DATA_WIDTH/ {print $$2}' $(PARAMETERS))
+export PARAM_AXIS_DATA_WIDTH ?= 8
 
 ifeq ($(SIM), icarus)
 	PLUSARGS += -fst
