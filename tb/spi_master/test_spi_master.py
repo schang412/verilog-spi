@@ -27,8 +27,8 @@ class TB(object):
         cocotb.fork(Clock(dut.clk, 4, units="ns").start())
 
         spi_signals = SpiSignals(
-            sclk=dut.sclk,
-            mosi=dut.mosi,
+            sclk=dut.sclk_o,
+            mosi=dut.mosi_o,
             miso=dut.miso,
             cs=dut.bus_active,
             cs_active_low=False
