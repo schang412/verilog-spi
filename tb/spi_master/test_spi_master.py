@@ -18,7 +18,7 @@ from cocotbext.spi.devices.generic import SpiSlaveLoopback
 
 
 class TB(object):
-    def __init__(self, dut, spi_mode, spi_word_width):
+    def __init__(self, dut, spi_mode, spi_word_width, msb_first):
         self.dut = dut
 
         self.log = logging.getLogger("cocotb.tb")
@@ -38,7 +38,7 @@ class TB(object):
             word_width=spi_word_width,
             cpol=bool(spi_mode in [2, 3]),
             cpha=bool(spi_mode in [1, 3]),
-            msb_first=True,
+            msb_first=msb_first,
             frame_spacing_ns=1
         )
 
@@ -59,13 +59,14 @@ class TB(object):
         await RisingEdge(self.dut.clk)
 
 
-async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None, spi_word_width=None):
-    tb = TB(dut, spi_mode, spi_word_width)
+async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None, spi_word_width=None, lsb_first=None):
+    tb = TB(dut, spi_mode, spi_word_width, (not bool(lsb_first)))
     await tb.reset()
 
     dut.sclk_prescale.value = 4
     dut.spi_word_width.value = spi_word_width
     dut.spi_mode.value = spi_mode
+    dut.lsb_first = lsb_first
 
     for test_data in [payload_data(x) for x in payload_lengths()]:
         await tb.source.write(test_data)
@@ -101,7 +102,7 @@ if cocotb.SIM_NAME:
     factory.add_option("payload_lengths", [size_list])
     factory.add_option("payload_data", [incrementing_payload])
     factory.add_option("spi_mode", [0, 1, 2, 3])
-    # factory.add_option("spi_mode", [1])
+    factory.add_option("lsb_first", [0, 1])
     factory.add_option("spi_word_width", spi_word_width_list())
     factory.generate_tests()
 
@@ -111,7 +112,7 @@ rtl_dir = os.path.abspath(os.path.join(tests_dir, '../../rtl'))
 
 
 @pytest.mark.parametrize("axis_data_width", [8, 16, 32, 64])
-def test_spi_tx(request, axis_data_width):
+def test_spi_master(request, axis_data_width):
     dut = "spi_master"
     module = os.path.splitext(os.path.basename(__file__))[0]
     toplevel = dut
