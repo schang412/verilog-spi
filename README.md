@@ -6,24 +6,41 @@ GitHub repository: https://github.com/schang412/verilog-spi
 
 ## Introduction
 
-This is a basic SPI to AXI Stream IP Core, written in Verilog with cocotb testbenches.
+SPI interface components written in SystemVerilog with cocotb testbenches.
 
 ## Documentation
 
-The main code for the core exists in the `rtl` subdirectory. The `spi_tx.sv` and `spi_rx.sv` contain the actual implementation while `spi_master.sv` instantiates the modules and makes internal connections.
+### spi_master module
 
-The module has a MOSI pin for transmit and a MISO pin for receive. The modules take one parameter, `AXIS_DATA_WIDTH`, which specifies the width of the data bus. The length of a SPI word is determined by `spi_word_width`, which must take on a value of equal or less than `AXIS_DATA_WIDTH`. `spi_word_width` is latched on a transmit transaction. The `sclk_prescale` factor determines the frequency of `sclk` (calculated by Fclk/sclk_prescale) (the minimum value for `sclk_prescale` is 2). The `spi_mode` determines how the module samples data, shifts data, and the clock idle level.
+#### Parameters
+- AXIS_DATA_WIDTH: the bit width of the axis stream interface
+- PRESCALE_WIDTH: the bit of the clock prescale value
 
-The module provides a 'busy' signal that is high when the respective operation is taking place. The receiver also presents an overrun error signal that goes high when the data word currently in the tdata output register is not read before another word is received.
+#### Signals
+- lsb_first: clock out the lowest bit first
+- spi_mode: determines the idle clock polarity and how the module sample snad shift data
+- sclk_prescale: the number to divide the clock cycles by (should be divisible by 4)
+- spi_word_width: how many bits are transmitted in a SPI transaction
+- rx_overrun_error: received another word before the current word has been read
+- bus_active: active high when the bus is currently in use (should be inverted to get n_cs)
 
-The main interface to the user design is an AXI4-Stream interface that consists of `tdata`, `tvalid`, and `tready` signals. `tready` flows in the opposite direction as `tdata` and `tvalid`. `tdata` is considered valid when `tvalid` is high. The destination will accept data only when `tready` is high. Data is transferred from the source to the destination when both `tvalid` and `tready` are high, otherwise the bus is stalled.
+The mode, sclk_prescale, and word_width are sampled at the beginning of an SPI transaction, which is initiated by the AXIS input.
+
+### spi_master_axil module
+
+#### Parameters
+
+- NUM_SS_BITS: the number of slave select lines (1-32)
+- FIFO_EXIST: declares that a FIFO buffer should exist between the AXIL register and spi_master module.
+- FIFO_DEPTH: the depth of the FIFO queue
+- AXIL_ADDR_WIDTH: the address width of the AXIL interface (16, 32, 64)
+- AXIL_ADDR_BASE: the base address that the contents are offset from
 
 ### Source Files
 
 ```
-rtl/spi_master.sv  : Wrapper for the complete SPI interface
-rtl/spi_rx.sv      : SPI receiver implementation
-rtl/spi_tx.sv      : SPI transmitter implementation
+rtl/spi_master.sv       : SPI master module
+rtl/spi_master_axil.sv  : SPI master module (32-bit AXI lite slave)
 ```
 
 ### SPI Modes
@@ -32,8 +49,8 @@ rtl/spi_tx.sv      : SPI transmitter implementation
 | -------- | ---- | ---- | ---------------- | -------------------------------------------- |
 | 0        | 0    | 0    | 0                | Sample on rising edge, shift on falling edge |
 | 1        | 0    | 1    | 0                | Sample on falling edge, shift on rising edge |
-| 2        | 1    | 1    | 1                | Sample on falling edge, shift on rising edge |
-| 3        | 1    | 0    | 1                | Sample on rising edge, shift on falling edge |
+| 2        | 1    | 0    | 1                | Sample on rising edge, shift on falling edge |
+| 3        | 1    | 1    | 1                | Sample on falling edge, shift on rising edge |
 
 ## Testing
 
