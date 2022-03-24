@@ -66,17 +66,17 @@ async def run_test(dut, spi_mode=None, spi_word_width=None, lsb_first=None):
 
     # check default config register
     default_ctrl_reg_contents = (4 << 16) | (8 << 8) | (1 << 5)
-    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x60)
+    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x20)
     assert ctrl_register_contents == default_ctrl_reg_contents
 
     # test config register update
-    await tb.axil_master.write(baseaddr+0x60, (default_ctrl_reg_contents | 1).to_bytes(4, byteorder='little'))
-    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x60)
+    await tb.axil_master.write(baseaddr+0x20, (default_ctrl_reg_contents | 1).to_bytes(4, byteorder='little'))
+    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x20)
     assert ctrl_register_contents == default_ctrl_reg_contents | 1
 
     # test software reset
-    await tb.axil_master.write(baseaddr+0x40, (0x0000_000A).to_bytes(4, byteorder='little'))
-    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x60)
+    await tb.axil_master.write(baseaddr+0x10, (0x0000_000A).to_bytes(4, byteorder='little'))
+    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x20)
     assert ctrl_register_contents == default_ctrl_reg_contents
 
     has_fifo = (int(os.environ["PARAM_FIFO_EXIST"]) == 1)
@@ -91,7 +91,7 @@ async def run_test(dut, spi_mode=None, spi_word_width=None, lsb_first=None):
     ctrl_reg_config = ctrl_reg_config | (1 << 3) if spi_mode in [2,3] else ctrl_reg_config
     ctrl_reg_config = ctrl_reg_config | (1 << 2) if spi_mode in [1,3] else ctrl_reg_config
     ctrl_reg_config = ctrl_reg_config | (1 << 1)
-    await tb.axil_master.write(baseaddr+0x60, ctrl_reg_config.to_bytes(4, byteorder='little'))
+    await tb.axil_master.write(baseaddr+0x20, ctrl_reg_config.to_bytes(4, byteorder='little'))
 
     test_data = [
         0x8888_8888,
@@ -108,10 +108,10 @@ async def run_test(dut, spi_mode=None, spi_word_width=None, lsb_first=None):
     if has_fifo:
         # when fifo is there, we will test automatic slave select
         # select the slave
-        await tb.axil_master.write(baseaddr+0x6C, (0b0).to_bytes(4, byteorder='little'))
+        await tb.axil_master.write(baseaddr+0x2C, (0b0).to_bytes(4, byteorder='little'))
 
         for d in test_data:
-            await tb.axil_master.write_dword(baseaddr+0x70, d)
+            await tb.axil_master.write_dword(baseaddr+0x30, d)
 
         # wait for all the bits to be written
         # num tx * num bits per tx * sclk_prescale * clk_period (there is also a register to poll)
@@ -120,7 +120,7 @@ async def run_test(dut, spi_mode=None, spi_word_width=None, lsb_first=None):
 
         data_received = []
         for _ in test_data:
-            data_received.append(await tb.axil_master.read_dword(baseaddr+0x74))
+            data_received.append(await tb.axil_master.read_dword(baseaddr+0x34))
 
         assert data_received[1:] == [(x & ((2**spi_word_width)-1)) for x in test_data[:-1]]
 
@@ -129,16 +129,16 @@ async def run_test(dut, spi_mode=None, spi_word_width=None, lsb_first=None):
 
         for d in test_data:
             # select the slave
-            await tb.axil_master.write(baseaddr+0x6C, (0b0).to_bytes(4, byteorder='little'))
-            await tb.axil_master.write_dword(baseaddr+0x70, d)
+            await tb.axil_master.write(baseaddr+0x2C, (0b0).to_bytes(4, byteorder='little'))
+            await tb.axil_master.write_dword(baseaddr+0x30, d)
 
             # wait for the bits to be written (there is also a register we can poll)
             await Timer(spi_word_width*4*4*2, units='ns')
 
-            data_received.append(await tb.axil_master.read_dword(baseaddr+0x74))
+            data_received.append(await tb.axil_master.read_dword(baseaddr+0x34))
 
             # deselect the slave
-            await tb.axil_master.write(baseaddr+0x6C, (0b1).to_bytes(4, byteorder='little'))
+            await tb.axil_master.write(baseaddr+0x2C, (0b1).to_bytes(4, byteorder='little'))
             await RisingEdge(dut.clk)
 
         assert data_received[1:] == [(x & ((2**spi_word_width)-1)) for x in test_data[:-1]]

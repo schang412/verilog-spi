@@ -36,7 +36,8 @@ module spi_master_axil #
     parameter FIFO_DEPTH = 16, // set to a power of 2
 
     parameter AXIL_ADDR_WIDTH = 16,
-    parameter AXIL_ADDR_BASE = 0
+    parameter AXIL_ADDR_BASE = 0,
+    parameter RB_NEXT_PTR = 0
 )
 (
     input  wire                         clk,
@@ -78,13 +79,34 @@ module spi_master_axil #
 );
 /*
 
-Software Reset Register: (AXIL_ADDR_BASE + 0x40) (WO)
+ID Register: (AXIL_ADDR_BASE + 0x00) (RO)
+
+Identifies that this register section contains an SPI block: 0x294E_C100
+
+
+-----------------------------------------------------------------------
+Revision Register: (AXIL_ADDR_BASE + 0x04) (RO)
+
+Identifies the revision of the HDL code: 0x0000_0100
+
+
+-----------------------------------------------------------------------
+Pointer Register: (AXIL_ADDR_BASE + 0x08) (RO)
+
+Contains the data specified by the parameter RB_NEXT_PTR. The intended
+use is for the main driver to automatically load the respective sub-drivers
+using the ID and the pointer to the next driver to be loaded.
+
+Default: 0 (settable by parameter RB_NEXT_PTR)
+
+-----------------------------------------------------------------------
+Software Reset Register: (AXIL_ADDR_BASE + 0x10) (WO)
 
 Write 0x0000_000A to perform a software reset
 
 
 -----------------------------------------------------------------------
-SPI Control Register: (AXIL_ADDR_BASE + 0x60) (RW)
+SPI Control Register: (AXIL_ADDR_BASE + 0x20) (RW)
 
 *Note that changing the control register will reset the FIFO
 
@@ -100,7 +122,7 @@ Bit     0: LOOP (default 0; 0=Normal, 1=Loopback)
 
 
 -----------------------------------------------------------------------
-SPI Status Register: (AXIL_ADDR_BASE + 0x68) (RO)
+SPI Status Register: (AXIL_ADDR_BASE + 0x28) (RO)
 
 Bit  31-4: Reserved
 Bit     3: TX_FULL
@@ -110,7 +132,7 @@ Bit     0: RX_EMPTY
 
 
 -----------------------------------------------------------------------
-SPI Slave Select Register: (AXIL_ADDR_BASE + 0x6C) (RW)
+SPI Slave Select Register: (AXIL_ADDR_BASE + 0x2C) (RW)
 
 Active-Low, One-hot encoded slave select vector of length N (determined by NUM_SS_BITS).
 At most, one bit be asserted low and denotes which slave the master will communicate
@@ -120,13 +142,13 @@ Bit N-1:0: Selected Slave
 
 
 -----------------------------------------------------------------------
-SPI Data Transmit Register: (AXIL_ADDR_BASE + 0x70) (WO)
+SPI Data Transmit Register: (AXIL_ADDR_BASE + 0x30) (WO)
 
 The data to be transmitted aligned to the right with the MSB first. This does not depend
 on LSB first transfer selection.
 
 -----------------------------------------------------------------------
-SPI Data Receive Register: (AXIL_ADDR_BASE + 0x74) (RO)
+SPI Data Receive Register: (AXIL_ADDR_BASE + 0x34) (RO)
 
 The data to received, aligned to the right with the MSB first. This does not depend
 on LSB first transfer selection.
@@ -309,14 +331,14 @@ always_ff @(posedge clk) begin
             case ({s_axil_awaddr >> 2, 2'b00})
 
                 // Software Reset Register
-                AXIL_ADDR_BASE+8'h40: begin
+                AXIL_ADDR_BASE+8'h10: begin
                     if (s_axil_wdata == 32'h0000000A) begin
                         software_rst <= 1'b1;
                     end
                 end
 
                 // SPI Control Register
-                AXIL_ADDR_BASE+8'h60: begin
+                AXIL_ADDR_BASE+8'h20: begin
                     fifo_rst <= 1'b1;
                     if (s_axil_wstrb[0]) begin
                         mssa_reg        <= s_axil_wdata[5];
@@ -338,7 +360,7 @@ always_ff @(posedge clk) begin
                 end
 
                 // SPI Slave Select Register
-                AXIL_ADDR_BASE+8'h6C: begin
+                AXIL_ADDR_BASE+8'h2C: begin
                     if (s_axil_wstrb[0]) begin
                         slave_select_reg[7:0] <= s_axil_wdata[7:0];
                     end
@@ -354,7 +376,7 @@ always_ff @(posedge clk) begin
                 end
 
                 // SPI Data Transmit Register
-                AXIL_ADDR_BASE+8'h70: begin
+                AXIL_ADDR_BASE+8'h30: begin
                     axis_write_tvalid <= 1'b1;
 
                     if (s_axil_wstrb[0]) begin
@@ -407,8 +429,17 @@ always_ff @(posedge clk) begin
 
         if (do_axil_read) begin
             case ({s_axil_araddr >> 2, 2'b00})
+                // ID Register
+                AXIL_ADDR_BASE+8'h00: s_axil_rdata_reg <= 32'h294EC100;
+
+                // Revision Register
+                AXIL_ADDR_BASE+8'h04: s_axil_rdata_reg <= 32'h00000100;
+
+                // Pointer Register
+                AXIL_ADDR_BASE+8'h08: s_axil_rdata_reg <= RB_NEXT_PTR;
+
                 // SPI Control Register
-                AXIL_ADDR_BASE+8'h60: begin
+                AXIL_ADDR_BASE+8'h20: begin
                     s_axil_rdata_reg[31:16] <= spi_clock_prescale_reg;
                     s_axil_rdata_reg[15:8]  <= spi_word_width_reg;
                     s_axil_rdata_reg[5] <= mssa_reg;
@@ -420,7 +451,7 @@ always_ff @(posedge clk) begin
                 end
 
                 // SPI Status Register
-                AXIL_ADDR_BASE+8'h68: begin
+                AXIL_ADDR_BASE+8'h28: begin
                     // {TX_FULL, TX_EMPTY, RX_FULL, RX_EMPTY}
                     s_axil_rdata_reg[2] <= ~axis_write_ext_tvalid;
                     s_axil_rdata_reg[0] <= ~axis_read_tvalid;
@@ -434,13 +465,13 @@ always_ff @(posedge clk) begin
                 end
 
                 // SPI Slave Select Register
-                AXIL_ADDR_BASE+8'h6C: begin
+                AXIL_ADDR_BASE+8'h2C: begin
                     s_axil_rdata_reg <= slave_select_reg;
                 end
 
 
                 // SPI Data Receive Register
-                AXIL_ADDR_BASE+8'h74: begin
+                AXIL_ADDR_BASE+8'h34: begin
                     s_axil_rdata_reg <= axis_read_tdata;
                     axis_read_tready <= axis_read_tvalid;
                 end
