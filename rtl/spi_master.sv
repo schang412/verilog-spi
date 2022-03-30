@@ -90,7 +90,6 @@ assign mosi_t = mosi_reg;
 reg rx_overrun_error_reg = 0;
 reg active = 0;
 assign bus_active = (master_state != IDLE);
-reg seen_posedge_sclk;
 
 // lsb first
 reg lsb_first_buff;
@@ -116,7 +115,6 @@ always_ff @(posedge clk) begin : proc_spi_transaction
         mosi_reg <= 0;
         data_i_reg <= 0;
         rx_overrun_error_reg <= 0;
-        seen_posedge_sclk <= 0;
         m_axis_tvalid_reg <= 1'b0;
     end else begin
         miso_reg <= miso;
@@ -140,16 +138,12 @@ always_ff @(posedge clk) begin : proc_spi_transaction
                     data_o_reg <= s_axis_tdata;
                     data_i_reg <= 0;
 
-                    seen_posedge_sclk <= 0;
                     bit_in_cnt <= 0;
                     bit_out_cnt <= 0;
                     master_state <= TRANSFER;
                 end
             end
             TRANSFER: begin
-                // according to https://www.analog.com/en/analog-dialogue/articles/introduction-to-spi-interface.html
-                // the timing diagrams say that we will treat the rising edge as our first edge
-
                 // for cpha = 0, the rising edge is sampling, so we must prepare data on the wire
                 // before we see any clocks (as soon as we transition to the transfer state)
                 if ((~cpha) && (bit_out_cnt==0)) begin
@@ -163,12 +157,8 @@ always_ff @(posedge clk) begin : proc_spi_transaction
                     bit_out_cnt <= bit_out_cnt + 1;
                 end
 
-                if (sclk_rising_edge) begin
-                    seen_posedge_sclk <= 1;
-                end
-
                 // read stage
-                if (sclk_read_edge && (seen_posedge_sclk | sclk_rising_edge)) begin
+                if (sclk_read_edge) begin
                     if (lsb_first_buff) begin
                         // note that if the spi word is shorter, this will be aligned left
                         data_i_reg <= {miso_reg, data_i_reg[AXIS_DATA_WIDTH-1:1]};
@@ -179,7 +169,7 @@ always_ff @(posedge clk) begin : proc_spi_transaction
                 end
 
                 // write stage
-                if (sclk_write_edge && (seen_posedge_sclk | sclk_rising_edge)) begin
+                if (sclk_write_edge) begin
 
                     if (lsb_first_buff) begin
                         mosi_reg <= data_o_reg[0];
@@ -239,9 +229,18 @@ reg sclk_last;
 wire sclk_read_edge;
 wire sclk_write_edge;
 wire sclk_rising_edge;
-assign sclk_read_edge = (cpha) ? (sclk_last & ~sclk_o) : (~sclk_last & sclk_o);
-assign sclk_write_edge = (cpha) ? (~sclk_last & sclk_o) : (sclk_last & ~sclk_o);
+wire sclk_falling_edge;
+
+// cpha = 0 means read on first edge
+// cpha = 1 means read on second edge
+// POL0, PHA0 sample on rising
+// POL0, PHA1 sample on falling
+// POL1, PHA0 sample on falling
+// POL1, PHA1 sample on rising
+assign sclk_read_edge = (cpha ^ cpol) ? sclk_falling_edge : sclk_rising_edge;
+assign sclk_write_edge = (cpha ^ cpol) ? sclk_rising_edge : sclk_falling_edge;
 assign sclk_rising_edge = (~sclk_last & sclk_o);
+assign sclk_falling_edge = (sclk_last & ~sclk_o);
 
 always_ff @(posedge clk) begin : proc_sclk_gen
     if (rst) begin

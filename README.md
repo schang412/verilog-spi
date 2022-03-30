@@ -45,12 +45,16 @@ rtl/spi_master_axil.sv  : SPI master module (32-bit AXI lite slave)
 
 ### SPI Modes
 
+The following CPOL and CPHA definitons are identical to the ones used by the Linux Kernel and Wikipedia. When CPHA=0, we
+should sample on the first edge that we see, while when CPHA=1, we should sample on the second edge. This means that the
+edge that we sample on changes depending on the idle clock polarity.
+
 | SPI Mode | CPOL | CPHA | Clock Idle Level | Data Shifting                                |
 | -------- | ---- | ---- | ---------------- | -------------------------------------------- |
 | 0        | 0    | 0    | 0                | Sample on rising edge, shift on falling edge |
 | 1        | 0    | 1    | 0                | Sample on falling edge, shift on rising edge |
-| 2        | 1    | 0    | 1                | Sample on rising edge, shift on falling edge |
-| 3        | 1    | 1    | 1                | Sample on falling edge, shift on rising edge |
+| 2        | 1    | 0    | 1                | Sample on falling edge, shift on rising edge |
+| 3        | 1    | 1    | 1                | Sample on rising edge, shift on falling edge |
 
 ## Testing
 
