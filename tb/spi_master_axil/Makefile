@@ -14,8 +14,8 @@ MODULE   = test_$(DUT)
 
 RTL_DIR = $(shell pwd)/../../rtl
 
-VERILOG_FILES = $(DUT).sv
-VERILOG_FILES += spi_master.sv
+VERILOG_FILES = $(DUT).v
+VERILOG_FILES += spi_master.v
 VERILOG_FILES += axis_fifo.v
 
 VERILOG_SOURCES = $(patsubst %, $(RTL_DIR)/%, $(VERILOG_FILES))

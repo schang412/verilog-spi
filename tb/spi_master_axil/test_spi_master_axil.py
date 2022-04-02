@@ -47,6 +47,8 @@ class TB(object):
         self.spi_loopback = SpiSlaveLoopback(spi_signals, spi_config)
 
         self.axil_master = AxiLiteMaster(AxiLiteBus.from_prefix(dut, "s_axil"), dut.clk, dut.rst)
+        # self.axil_master.write_if.log.setLevel(logging.ERROR)
+        # self.axil_master.read_if.log.setLevel(logging.ERROR)
 
     async def reset(self):
         self.dut.rst.setimmediatevalue(0)
@@ -59,95 +61,162 @@ class TB(object):
         await RisingEdge(self.dut.clk)
         await RisingEdge(self.dut.clk)
 
+A32V_SPI_ID                     = 0x294EC100
+A32V_SPI_REV                    = 0x00000100
 
-async def run_test(dut, spi_mode=None, spi_word_width=None, lsb_first=None):
+A32V_SPI_ID_OFFSET              = 0x00 # Interface ID Register
+A32V_SPI_REV_OFFSET             = 0x04 # Interface Revision Register
+A32V_SPI_PNT_OFFSET             = 0x08 # Interface Next Pointer Register
+A32V_SPI_RESETR_OFFSET          = 0x10 # Interface Reset Register
+A32V_SPI_RESET_VECTOR           = 0x0A # the value to write
+A32V_SPI_CTR_OFFSET             = 0x20 # Control Register
+A32V_SPI_CTR_LOOP               = 0x01
+A32V_SPI_CTR_ENABLE             = 0x02
+A32V_SPI_CTR_CPHA               = 0x04
+A32V_SPI_CTR_CPOL               = 0x08
+A32V_SPI_CTR_LSB_FIRST          = 0x10
+A32V_SPI_CTR_MANUAL_SSELECT     = 0x20
+A32V_SPI_CTR_MODE_MASK          = (A32V_SPI_CTR_CPHA | A32V_SPI_CTR_CPOL | A32V_SPI_CTR_LSB_FIRST | A32V_SPI_CTR_LOOP)
+
+A32V_SPI_CTR_WORD_WIDTH_OFFSET  = 8
+A32V_SPI_CTR_WORD_WIDTH_MASK    = (0xff << A32V_SPI_CTR_WORD_WIDTH_OFFSET)
+
+A32V_SPI_CTR_CLKPRSCL_OFFSET    = 16
+A32V_SPI_CTR_CLKPRSCL_MASK      = (0xffff << A32V_SPI_CTR_CLKPRSCL_OFFSET)
+
+A32V_SPI_SR_OFFSET          = 0x28 # Status Register
+A32V_SPI_SR_RX_EMPTY_MASK   = 0x01 # Received FIFO is empty
+A32V_SPI_SR_RX_FULL_MASK    = 0x02 # Received FIFO is full
+A32V_SPI_SR_TX_EMPTY_MASK   = 0x04 # Transmit FIFO is empty
+A32V_SPI_SR_TX_FULL_MASK    = 0x08 # Transmit FIFO is full
+A32V_SPI_SSR_OFFSET         = 0x2C # 32-bit Slave Select Register
+A32V_SPI_TXD_OFFSET         = 0x30 # Data Transmit Register
+A32V_SPI_RXD_OFFSET         = 0x34 # Data Receive Register
+
+
+async def do_soft_rst(tb, baseaddr):
+    await tb.axil_master.write_dword(baseaddr + A32V_SPI_RESETR_OFFSET, A32V_SPI_RESET_VECTOR)
+
+
+async def get_buffer_size(tb, baseaddr):
+    n_words = 0
+    await do_soft_rst(tb, baseaddr)
+
+    while True:
+        await tb.axil_master.write_dword(baseaddr + A32V_SPI_TXD_OFFSET, 0x0000_0000)
+        n_words += 1
+        if await tb.axil_master.read_dword(baseaddr + A32V_SPI_SR_OFFSET) & A32V_SPI_SR_TX_FULL_MASK:
+            break
+
+    return n_words
+
+
+async def run_test(dut, payload_data=None, spi_mode=None, spi_word_width=None, lsb_first=None, sclk_prescale=None, block_size=None):
     tb = TB(dut, spi_mode, spi_word_width, (not bool(lsb_first)))
     await tb.reset()
 
     baseaddr = int(os.environ["PARAM_AXIL_ADDR_BASE"])
 
     # check default config register
-    default_ctrl_reg_contents = (4 << 16) | (8 << 8) | (1 << 5)
-    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x20)
+    default_ctrl_reg_contents = ((4 << A32V_SPI_CTR_CLKPRSCL_OFFSET)
+                                    | (8 << A32V_SPI_CTR_WORD_WIDTH_OFFSET)
+                                    | (A32V_SPI_CTR_MANUAL_SSELECT))
+    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+A32V_SPI_CTR_OFFSET)
     assert ctrl_register_contents == default_ctrl_reg_contents
 
     # test config register update
-    await tb.axil_master.write(baseaddr+0x20, (default_ctrl_reg_contents | 1).to_bytes(4, byteorder='little'))
-    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x20)
-    assert ctrl_register_contents == default_ctrl_reg_contents | 1
+    await tb.axil_master.write_dword(baseaddr+A32V_SPI_CTR_OFFSET, default_ctrl_reg_contents | A32V_SPI_CTR_LOOP)
+    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+A32V_SPI_CTR_OFFSET)
+    assert ctrl_register_contents == default_ctrl_reg_contents | A32V_SPI_CTR_LOOP
 
     # test software reset
-    await tb.axil_master.write(baseaddr+0x10, (0x0000_000A).to_bytes(4, byteorder='little'))
-    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+0x20)
+    await do_soft_rst(tb, baseaddr)
+    ctrl_register_contents = await tb.axil_master.read_dword(baseaddr+A32V_SPI_CTR_OFFSET)
     assert ctrl_register_contents == default_ctrl_reg_contents
 
+    # test the buffer depth
     has_fifo = (int(os.environ["PARAM_FIFO_EXIST"]) == 1)
+    buffer_size = await get_buffer_size(tb, baseaddr)
+    if has_fifo:
+        assert buffer_size == int(os.environ["PARAM_FIFO_DEPTH"]) + 2
+    else:
+        assert buffer_size == 1
 
     # configure module for data transfer
     ctrl_reg_config = 0
-    ctrl_reg_config = ctrl_reg_config | 4 << 16
-    ctrl_reg_config = ctrl_reg_config & ~(0xff << 8)
-    ctrl_reg_config = ctrl_reg_config | ((spi_word_width & 0xff) << 8)
-    ctrl_reg_config = ctrl_reg_config & ~(1 << 5) if has_fifo else ctrl_reg_config
-    ctrl_reg_config = ctrl_reg_config | (1 << 4) if lsb_first else ctrl_reg_config
-    ctrl_reg_config = ctrl_reg_config | (1 << 3) if spi_mode in [2,3] else ctrl_reg_config
-    ctrl_reg_config = ctrl_reg_config | (1 << 2) if spi_mode in [1,3] else ctrl_reg_config
-    ctrl_reg_config = ctrl_reg_config | (1 << 1)
-    await tb.axil_master.write(baseaddr+0x20, ctrl_reg_config.to_bytes(4, byteorder='little'))
+    ctrl_reg_config = ctrl_reg_config | sclk_prescale << A32V_SPI_CTR_CLKPRSCL_OFFSET
+    ctrl_reg_config = ctrl_reg_config | ((spi_word_width & 0xff) << A32V_SPI_CTR_WORD_WIDTH_OFFSET)
+    ctrl_reg_config = ctrl_reg_config | A32V_SPI_CTR_LSB_FIRST if lsb_first else ctrl_reg_config
+    ctrl_reg_config = ctrl_reg_config | A32V_SPI_CTR_CPOL if spi_mode in [2,3] else ctrl_reg_config
+    ctrl_reg_config = ctrl_reg_config | A32V_SPI_CTR_CPHA if spi_mode in [1,3] else ctrl_reg_config
+    ctrl_reg_config = ctrl_reg_config | A32V_SPI_CTR_ENABLE
+    await tb.axil_master.write_dword(baseaddr+A32V_SPI_CTR_OFFSET, ctrl_reg_config)
 
-    test_data = [
-        0x8888_8888,
-        0x9999_9999,
-        0xAAAA_AAAA,
-        0xBBBB_BBBB,
-        0xCCCC_CCCC,
-        0xDDDD_DDDD,
-        0xEEEE_EEEE,
-        0xFFFF_FFFF,
-        0x1234_4321
-    ]
+    bytes_per_word = int(spi_word_width/8)
 
-    if has_fifo:
-        # when fifo is there, we will test automatic slave select
+    for test_data in [payload_data(block_size*bytes_per_word)]:
+        tdata = []
+        data_received = []
+        payload_len = len(test_data)
+        num_remaining_words = int(payload_len / (spi_word_width/8))
+
         # select the slave
-        await tb.axil_master.write(baseaddr+0x2C, (0b0).to_bytes(4, byteorder='little'))
+        await tb.axil_master.write_dword(baseaddr+A32V_SPI_SSR_OFFSET, 0)
 
-        for d in test_data:
-            await tb.axil_master.write_dword(baseaddr+0x30, d)
+        while num_remaining_words:
+            # determine how many words we can send at once
+            n_words = min(num_remaining_words, buffer_size)
+            tx_words = n_words
+            for i in range(tx_words):
+                if spi_word_width == 8:
+                    await tb.axil_master.write(baseaddr+A32V_SPI_TXD_OFFSET, [test_data[0]])
+                    tdata.append(test_data[0])
+                    test_data = test_data[1:]
+                elif spi_word_width == 16:
+                    await tb.axil_master.write(baseaddr+A32V_SPI_TXD_OFFSET, test_data[0:2])
+                    tdata.append((test_data[1] << 8) | (test_data[0]))
+                    test_data = test_data[2:]
+                elif spi_word_width == 32:
+                    await tb.axil_master.write(baseaddr+A32V_SPI_TXD_OFFSET, test_data[0:4])
+                    tdata.append((test_data[3] << 24) | (test_data[2] << 16) | (test_data[1] << 8) | (test_data[0]))
+                    test_data = test_data[4:]
+                else:
+                    raise NotImplementedError("Only 8,16,32 bit words are supported")
 
-        # wait for all the bits to be written
-        # num tx * num bits per tx * sclk_prescale * clk_period (there is also a register to poll)
-        # multiply above by 2 for a bigger time buffer
-        await Timer(len(test_data)*spi_word_width*4*4*2, units='ns')
+            # read the words back
+            sr = await tb.axil_master.read_dword(baseaddr+A32V_SPI_SR_OFFSET)
+            rx_words = n_words
 
-        data_received = []
-        for _ in test_data:
-            data_received.append(await tb.axil_master.read_dword(baseaddr+0x34))
+            while (rx_words):
+                if ((sr & A32V_SPI_SR_TX_EMPTY_MASK) and (rx_words > 1)):
+                    # we have transmitted everything, but we haven't read everything
+                    data_received.append(await tb.axil_master.read_dword(baseaddr+A32V_SPI_RXD_OFFSET))
+                    rx_words = rx_words - 1
+                    continue
+                sr = await tb.axil_master.read_dword(baseaddr+A32V_SPI_SR_OFFSET)
+                if (not(sr & A32V_SPI_SR_RX_EMPTY_MASK)):
+                    data_received.append(await tb.axil_master.read_dword(baseaddr+A32V_SPI_RXD_OFFSET))
+                    rx_words = rx_words - 1
 
-        assert data_received[1:] == [(x & ((2**spi_word_width)-1)) for x in test_data[:-1]]
+            # decrement the number of words we still have to send
+            num_remaining_words = num_remaining_words - n_words
 
-    else:
-        data_received = []
+        # deassert slave
+        await tb.axil_master.write_dword(baseaddr+A32V_SPI_SSR_OFFSET, 0xffff_ffff)
+        await RisingEdge(dut.clk)
 
-        for d in test_data:
-            # select the slave
-            await tb.axil_master.write(baseaddr+0x2C, (0b0).to_bytes(4, byteorder='little'))
-            await tb.axil_master.write_dword(baseaddr+0x30, d)
-
-            # wait for the bits to be written (there is also a register we can poll)
-            await Timer(spi_word_width*4*4*2, units='ns')
-
-            data_received.append(await tb.axil_master.read_dword(baseaddr+0x34))
-
-            # deselect the slave
-            await tb.axil_master.write(baseaddr+0x2C, (0b1).to_bytes(4, byteorder='little'))
-            await RisingEdge(dut.clk)
-
-        assert data_received[1:] == [(x & ((2**spi_word_width)-1)) for x in test_data[:-1]]
+        # spi_loopback is delayed one cycle
+        data_received.append(await tb.spi_loopback.get_contents())
+        tdata = [0] + tdata
+        assert data_received == tdata
 
     await Timer(2, units="us")
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
+
+
+def incrementing_payload(length):
+    return bytearray(itertools.islice(itertools.cycle(range(256)), length))
 
 
 if cocotb.SIM_NAME:
@@ -155,6 +224,9 @@ if cocotb.SIM_NAME:
     factory.add_option("spi_mode", [0, 1, 2, 3])
     factory.add_option("lsb_first", [0, 1])
     factory.add_option("spi_word_width", [8, 16, 32])
+    factory.add_option("payload_data", [incrementing_payload])
+    factory.add_option("sclk_prescale", [4, 16])
+    factory.add_option("block_size", [1, 3])  # number of words to transmit per transaction
     factory.generate_tests()
 
 
@@ -170,8 +242,8 @@ def test_spi_master_axil(request, fifo_exist, baseaddr):
     toplevel = dut
 
     verilog_files = [
-        f"{dut}.sv",
-        "spi_master.sv",
+        f"{dut}.v",
+        "spi_master.v",
         "axis_fifo.v"
     ]
     verilog_sources = [os.path.join(rtl_dir, x) for x in verilog_files]

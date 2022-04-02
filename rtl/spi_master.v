@@ -40,6 +40,8 @@ module spi_master #
     /*
      * Configuration
      */
+    input  wire                             enable,
+
     input  wire                             lsb_first,
     input  wire [1:0]                       spi_mode,
     input  wire [PRESCALE_WIDTH-1:0]        sclk_prescale,
@@ -61,7 +63,7 @@ reg [AXIS_DATA_WIDTH-1:0] m_axis_tdata_reg = 0;
 reg m_axis_tvalid_reg = 0;
 assign m_axis_tdata = m_axis_tdata_reg;
 assign m_axis_tvalid = m_axis_tvalid_reg;
-assign s_axis_tready = (master_state == IDLE);
+assign s_axis_tready = ((master_state == IDLE) && enable);
 
 // mosi
 reg mosi_reg = 0;
@@ -92,7 +94,58 @@ reg [WORD_COUNTER_WIDTH-1:0] bit_in_cnt = 0;
 reg [AXIS_DATA_WIDTH-1:0] data_o_reg = 0;
 reg [AXIS_DATA_WIDTH-1:0] data_i_reg = 0;
 
-always_ff @(posedge clk) begin : proc_spi_transaction
+// generate sclk signal
+wire sclk_en;
+assign sclk_en = (master_state != IDLE);
+
+reg [PRESCALE_WIDTH-1:0] sclk_prescale_buff;
+reg [PRESCALE_WIDTH-1:0] prescale_counter;
+
+reg sclk_buff = 0;
+assign sclk_o = sclk_buff;
+assign sclk_t = sclk_buff;
+
+// keep track of edges
+reg sclk_last;
+wire sclk_read_edge;
+wire sclk_write_edge;
+wire sclk_rising_edge;
+wire sclk_falling_edge;
+
+// cpha = 0 means read on first edge
+// cpha = 1 means read on second edge
+// POL0, PHA0 sample on rising
+// POL0, PHA1 sample on falling
+// POL1, PHA0 sample on falling
+// POL1, PHA1 sample on rising
+assign sclk_read_edge = (cpha ^ cpol) ? sclk_falling_edge : sclk_rising_edge;
+assign sclk_write_edge = (cpha ^ cpol) ? sclk_rising_edge : sclk_falling_edge;
+assign sclk_rising_edge = (~sclk_last & sclk_o);
+assign sclk_falling_edge = (sclk_last & ~sclk_o);
+
+always @(posedge clk) begin // proc_sclk_gen
+    if (rst) begin
+        prescale_counter <= 0;
+        sclk_last <= 0;
+    end else begin
+        if (sclk_en) begin
+            prescale_counter <= prescale_counter + 1;
+            // divide by 4 to account for inherent clock division in scheme
+            if (prescale_counter == sclk_prescale_buff >> 2) begin
+                sclk_buff <= !sclk_buff;
+                prescale_counter <= 0;
+            end
+        end else begin
+            // let the sclk idle according to the polarity
+            sclk_buff <= cpol;
+            prescale_counter <= 0;
+        end
+        sclk_last <= sclk_o;
+    end
+end // end proc_sclk_gen
+
+// perform an spi transaction
+always @(posedge clk) begin // proc_spi_transaction
     if (rst) begin
         master_state <= IDLE;
         mosi_reg <= 0;
@@ -111,7 +164,7 @@ always_ff @(posedge clk) begin : proc_spi_transaction
         // state machine
         case (master_state)
             IDLE: begin
-                if (s_axis_tvalid && s_axis_tready) begin
+                if (enable && s_axis_tvalid && s_axis_tready) begin
                     // configurable inputs
                     spi_mode_buff <= spi_mode;
                     spi_word_width_buff <= spi_word_width;
@@ -192,61 +245,8 @@ always_ff @(posedge clk) begin : proc_spi_transaction
             default: master_state <= IDLE;
         endcase
     end
-end
+end // end proc_spi_transaction
 
-
-
-// generate sclk signal
-wire sclk_en;
-assign sclk_en = (master_state != IDLE);
-
-reg [PRESCALE_WIDTH-1:0] sclk_prescale_buff;
-reg [PRESCALE_WIDTH-1:0] prescale_counter;
-
-reg sclk_buff = 0;
-assign sclk_o = sclk_buff;
-assign sclk_t = sclk_buff;
-
-// keep track of edges
-reg sclk_last;
-wire sclk_read_edge;
-wire sclk_write_edge;
-wire sclk_rising_edge;
-wire sclk_falling_edge;
-
-// cpha = 0 means read on first edge
-// cpha = 1 means read on second edge
-// POL0, PHA0 sample on rising
-// POL0, PHA1 sample on falling
-// POL1, PHA0 sample on falling
-// POL1, PHA1 sample on rising
-assign sclk_read_edge = (cpha ^ cpol) ? sclk_falling_edge : sclk_rising_edge;
-assign sclk_write_edge = (cpha ^ cpol) ? sclk_rising_edge : sclk_falling_edge;
-assign sclk_rising_edge = (~sclk_last & sclk_o);
-assign sclk_falling_edge = (sclk_last & ~sclk_o);
-
-always_ff @(posedge clk) begin : proc_sclk_gen
-    if (rst) begin
-        prescale_counter <= 0;
-        sclk_last <= 0;
-    end else begin
-        if (sclk_en) begin
-            prescale_counter <= prescale_counter + 1;
-            // divide by 4 to account for inherent clock division in scheme
-            if (prescale_counter == sclk_prescale_buff >> 2) begin
-                sclk_buff <= !sclk_buff;
-                prescale_counter <= 0;
-            end
-        end else begin
-            // let the sclk idle according to the polarity
-            sclk_buff <= cpol;
-            prescale_counter <= 0;
-        end
-        sclk_last <= sclk_o;
-    end
-end
-
-
-endmodule : spi_master
+endmodule // end spi_master
 
 `resetall

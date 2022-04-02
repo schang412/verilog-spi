@@ -114,7 +114,8 @@ Bit     0: RX_EMPTY
 SPI Slave Select Register: (AXIL_ADDR_BASE + 0x2C) (RW)
 
 Active-Low, One-hot encoded slave select vector of length N (determined by NUM_SS_BITS).
-At most, one bit be asserted low and denotes which slave the master will communicate
+At most, one bit be asserted low and denotes which slave the master will communicate.
+When more than one bit is low, only the highest bit slave select is asserted low.
 
 Bit  31-N: Reserved
 Bit N-1:0: Selected Slave
@@ -187,7 +188,7 @@ reg loop_reg = 1'b0;
 reg [15:0] spi_clock_prescale_reg = 16'd4;
 reg [7:0] spi_word_width_reg = 7'd8;
 
-reg [NUM_SS_BITS-1:0] slave_select_reg = {NUM_SS_BITS{1'b1}};
+reg [31:0] slave_select_reg = {32{1'b1}};
 
 generate
     if (FIFO_EXIST) begin
@@ -205,12 +206,12 @@ generate
             .rst(rst | software_rst | fifo_rst),
             // AXI input
             .s_axis_tdata(axis_write_tdata),
-            .s_axis_tkeep(0),
+            .s_axis_tkeep(4'b0),
             .s_axis_tvalid(axis_write_tvalid),
             .s_axis_tready(axis_write_tready),
             .s_axis_tlast(1'b0),
-            .s_axis_tid(0),
-            .s_axis_tdest(0),
+            .s_axis_tid(8'b0),
+            .s_axis_tdest(8'b0),
             .s_axis_tuser(1'b0),
             // AXI output
             .m_axis_tdata(axis_write_ext_tdata),
@@ -232,12 +233,12 @@ generate
             .rst(rst | software_rst | fifo_rst),
             // AXI input
             .s_axis_tdata(axis_read_ext_tdata),
-            .s_axis_tkeep(0),
+            .s_axis_tkeep(4'b0),
             .s_axis_tvalid(axis_read_ext_tvalid),
             .s_axis_tready(axis_read_ext_tready),
             .s_axis_tlast(1'b0),
-            .s_axis_tid(0),
-            .s_axis_tdest(0),
+            .s_axis_tid(8'b0),
+            .s_axis_tdest(8'b0),
             .s_axis_tuser(1'b0),
             // AXI output
             .m_axis_tdata(axis_read_tdata),
@@ -260,7 +261,7 @@ endgenerate
  * AXIL Write Transaction
  */
 
-always_comb begin
+always @* begin
 
     axis_write_tvalid_next = axis_write_tready ? 1'b0 : axis_write_tvalid;
 
@@ -279,7 +280,7 @@ always_comb begin
         do_axil_write = 1'b1;
     end
 end
-always_ff @(posedge clk) begin
+always @(posedge clk) begin
     if (rst || software_rst) begin
         s_axil_awready_reg <= 1'b0;
         s_axil_wready_reg <= 1'b0;
@@ -288,7 +289,7 @@ always_ff @(posedge clk) begin
         axis_write_tvalid <= 1'b0;
 
         // restore defaults
-        slave_select_reg <= {NUM_SS_BITS{1'b1}};
+        slave_select_reg <= {32{1'b1}};
         mssa_reg <= 1'b1;
         lsb_first_reg <= 1'b0;
         cpol_reg <= 1'b0;
@@ -331,7 +332,7 @@ always_ff @(posedge clk) begin
                         spi_word_width_reg <= s_axil_wdata[15:8];
                     end
                     if (s_axil_wstrb[2]) begin
-                        spi_clock_prescale_reg[15:8] <= s_axil_wdata[23:16];
+                        spi_clock_prescale_reg[7:0] <= s_axil_wdata[23:16];
                     end
                     if (s_axil_wstrb[3]) begin
                         spi_clock_prescale_reg[15:8] <= s_axil_wdata[31:24];
@@ -382,7 +383,7 @@ end
 /*
  * AXIL Read Transaction
  */
-always_comb begin
+always @* begin
     do_axil_read = 1'b0;
 
     s_axil_arready_next = 1'b0;
@@ -395,7 +396,7 @@ always_comb begin
         do_axil_read = 1'b1;
     end
 end
-always_ff @(posedge clk) begin
+always @(posedge clk) begin
     if (rst || software_rst) begin
         s_axil_arready_reg <= 1'b0;
         s_axil_rvalid_reg <= 1'b0;
@@ -448,7 +449,6 @@ always_ff @(posedge clk) begin
                     s_axil_rdata_reg <= slave_select_reg;
                 end
 
-
                 // SPI Data Receive Register
                 AXIL_ADDR_BASE+8'h34: begin
                     s_axil_rdata_reg <= axis_read_tdata;
@@ -483,15 +483,13 @@ assign spi_mosi_t = (spe_reg) ? mosi_t_int : 1'b0;
 assign spi_sclk_o = (spe_reg) ? sclk_o_int : 1'b0;
 assign spi_sclk_t = (spe_reg) ? sclk_t_int : 1'b0;
 
-always_comb begin
-    // set slave select
+always @* begin
+    // set slave select (prevent multiple slaves being low)
     spi_ncs_reg = {NUM_SS_BITS{1'b1}};
     for(int i=0; i < NUM_SS_BITS; i=i+1) begin
         if (slave_select_reg[i] == 0) begin
+            spi_ncs_reg = {NUM_SS_BITS{1'b1}};
             spi_ncs_reg[i] = (mssa_reg) ? 0 : ~spi_bus_active;
-
-            // break out
-            i = NUM_SS_BITS;
         end
     end
 
@@ -514,8 +512,9 @@ spi_master #(
     .sclk_t          (sclk_t_int),
     .mosi_o          (mosi_o_int),
     .mosi_t          (mosi_t_int),
-    .miso            (miso_int & spe_reg),
+    .miso            (miso_int),
 
+    .enable          (spe_reg),
 
     // Configuration
     .lsb_first       (lsb_first_reg),

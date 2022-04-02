@@ -49,6 +49,9 @@ class TB(object):
         self.source = AxiStreamSource(AxiStreamBus.from_prefix(dut, "s_axis"), dut.clk, dut.rst)
         self.sink = AxiStreamSink(AxiStreamBus.from_prefix(dut, "m_axis"), dut.clk, dut.rst)
 
+        self.source.log.setLevel(logging.ERROR)
+        self.sink.log.setLevel(logging.ERROR)
+
     async def reset(self):
         self.dut.rst.setimmediatevalue(0)
         await RisingEdge(self.dut.clk)
@@ -68,7 +71,8 @@ async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None, 
     dut.sclk_prescale.value = 4
     dut.spi_word_width.value = spi_word_width
     dut.spi_mode.value = spi_mode
-    dut.lsb_first = lsb_first
+    dut.lsb_first.value = lsb_first
+    dut.enable.value = 1
 
     for test_data in [payload_data(x) for x in payload_lengths()]:
         await tb.source.write(test_data)
@@ -78,8 +82,9 @@ async def run_test(dut, payload_data=None, payload_lengths=None, spi_mode=None, 
         while len(rx_data) < len(test_data):
             rx_data.extend(await tb.sink.read())
 
-        assert rx_data[1:] == test_data[:-1]
-        # assert tb.sink.empty()
+        # spi_loopback is delayed one cycle
+        rx_data.append(await tb.spi_loopback.get_contents())
+        assert rx_data[1:] == test_data
 
         await Timer(2, units="us")
 
@@ -120,7 +125,7 @@ def test_spi_master(request, axis_data_width):
     toplevel = dut
 
     verilog_files = [
-        f"{dut}.sv",
+        f"{dut}.v",
     ]
     verilog_sources = [os.path.join(rtl_dir, x) for x in verilog_files]
 
