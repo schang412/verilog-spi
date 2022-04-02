@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2021-2022 Spencer Chang
 
 import itertools
 import logging
