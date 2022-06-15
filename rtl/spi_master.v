@@ -56,14 +56,17 @@ module spi_master #
 
 localparam WORD_COUNTER_WIDTH = $clog2(AXIS_DATA_WIDTH) + 1;
 
-enum reg [1:0] {IDLE, TRANSFER, TX_COMPLETE} master_state = IDLE;
+localparam MASTER_STATE_IDLE = 2'b00;
+localparam MASTER_STATE_TRANSFER = 2'b01;
+localparam MASTER_STATE_TX_COMPLETE = 2'b10;
+reg [1:0] master_state = MASTER_STATE_IDLE;
 
 // axis
 reg [AXIS_DATA_WIDTH-1:0] m_axis_tdata_reg = 0;
 reg m_axis_tvalid_reg = 0;
 assign m_axis_tdata = m_axis_tdata_reg;
 assign m_axis_tvalid = m_axis_tvalid_reg;
-assign s_axis_tready = ((master_state == IDLE) && enable);
+assign s_axis_tready = ((master_state == MASTER_STATE_IDLE) && enable);
 
 // mosi
 reg mosi_reg = 0;
@@ -74,7 +77,7 @@ assign mosi_t = mosi_reg;
 // status
 reg rx_overrun_error_reg = 0;
 reg active = 0;
-assign bus_active = (master_state != IDLE);
+assign bus_active = (master_state != MASTER_STATE_IDLE);
 
 // lsb first
 reg lsb_first_buff;
@@ -96,7 +99,7 @@ reg [AXIS_DATA_WIDTH-1:0] data_i_reg = 0;
 
 // generate sclk signal
 wire sclk_en;
-assign sclk_en = (master_state != IDLE);
+assign sclk_en = (master_state != MASTER_STATE_IDLE);
 
 reg [PRESCALE_WIDTH-1:0] sclk_prescale_buff;
 reg [PRESCALE_WIDTH-1:0] prescale_counter;
@@ -147,7 +150,7 @@ end // end proc_sclk_gen
 // perform an spi transaction
 always @(posedge clk) begin // proc_spi_transaction
     if (rst) begin
-        master_state <= IDLE;
+        master_state <= MASTER_STATE_IDLE;
         mosi_reg <= 0;
         data_i_reg <= 0;
         rx_overrun_error_reg <= 0;
@@ -163,7 +166,7 @@ always @(posedge clk) begin // proc_spi_transaction
 
         // state machine
         case (master_state)
-            IDLE: begin
+            MASTER_STATE_IDLE: begin
                 if (enable && s_axis_tvalid && s_axis_tready) begin
                     // configurable inputs
                     spi_mode_buff <= spi_mode;
@@ -176,10 +179,10 @@ always @(posedge clk) begin // proc_spi_transaction
 
                     bit_in_cnt <= 0;
                     bit_out_cnt <= 0;
-                    master_state <= TRANSFER;
+                    master_state <= MASTER_STATE_TRANSFER;
                 end
             end
-            TRANSFER: begin
+            MASTER_STATE_TRANSFER: begin
                 // for cpha = 0, the rising edge is sampling, so we must prepare data on the wire
                 // before we see any clocks (as soon as we transition to the transfer state)
                 if ((~cpha) && (bit_out_cnt==0)) begin
@@ -220,7 +223,7 @@ always @(posedge clk) begin // proc_spi_transaction
                 // the last step of spi transaction in any mode is a read
                 // so we will check for done by doing a spi read
                 if (bit_in_cnt == spi_word_width_buff) begin
-                    master_state <= TX_COMPLETE;
+                    master_state <= MASTER_STATE_TX_COMPLETE;
 
                     // write data back to axis
                     m_axis_tvalid_reg <= 1;
@@ -235,14 +238,14 @@ always @(posedge clk) begin // proc_spi_transaction
                     rx_overrun_error_reg <= m_axis_tvalid_reg;
                 end
             end
-            TX_COMPLETE: begin
+            MASTER_STATE_TX_COMPLETE: begin
                 // ensure that we are sitting at the idle polarity before returning
                 // back to the idle state
                 if (sclk_buff == cpol) begin
-                    master_state <= IDLE;
+                    master_state <= MASTER_STATE_IDLE;
                 end
             end
-            default: master_state <= IDLE;
+            default: master_state <= MASTER_STATE_IDLE;
         endcase
     end
 end // end proc_spi_transaction

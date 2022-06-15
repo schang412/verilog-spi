@@ -6,7 +6,7 @@ GitHub repository: https://github.com/schang412/verilog-spi
 
 ## Introduction
 
-SPI interface components written in SystemVerilog with cocotb testbenches.
+SPI interface components written in Verilog-2005 with cocotb testbenches.
 
 ## Documentation
 
@@ -39,8 +39,8 @@ The mode, sclk_prescale, and word_width are sampled at the beginning of an SPI t
 ### Source Files
 
 ```
-rtl/spi_master.sv       : SPI master module
-rtl/spi_master_axil.sv  : SPI master module (32-bit AXI lite slave)
+rtl/spi_master.v       : SPI master module
+rtl/spi_master_axil.v  : SPI master module (32-bit AXI lite slave)
 ```
 
 ### SPI Modes
