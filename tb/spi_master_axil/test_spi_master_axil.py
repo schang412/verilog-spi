@@ -76,6 +76,7 @@ A32V_SPI_CTR_CPHA               = 0x04
 A32V_SPI_CTR_CPOL               = 0x08
 A32V_SPI_CTR_LSB_FIRST          = 0x10
 A32V_SPI_CTR_MANUAL_SSELECT     = 0x20
+A32V_SPI_CTR_RESET_FIFO         = 0x40
 A32V_SPI_CTR_MODE_MASK          = (A32V_SPI_CTR_CPHA | A32V_SPI_CTR_CPOL | A32V_SPI_CTR_LSB_FIRST | A32V_SPI_CTR_LOOP)
 
 A32V_SPI_CTR_WORD_WIDTH_OFFSET  = 8
@@ -92,6 +93,14 @@ A32V_SPI_SR_TX_FULL_MASK    = 0x08 # Transmit FIFO is full
 A32V_SPI_SSR_OFFSET         = 0x2C # 32-bit Slave Select Register
 A32V_SPI_TXD_OFFSET         = 0x30 # Data Transmit Register
 A32V_SPI_RXD_OFFSET         = 0x34 # Data Receive Register
+
+A32V_SPI_INTEN_OFFSET       = 0x44 # Interrupt Enable Register
+A32V_SPI_INTEN_RX_NOT_EMPTY = 0x02
+
+A32V_SPI_INTSTATUS_OFFSET       = 0x40 # Interrupt Status Register
+A32V_SPI_INTSTATUS_CLR_VECTOR   = 0x01
+A32V_SPI_INTSTATUS_RX_NOT_EMPTY = 0x02
+
 
 
 async def do_soft_rst(tb, baseaddr):
@@ -150,6 +159,7 @@ async def run_test(dut, payload_data=None, spi_mode=None, spi_word_width=None, l
     ctrl_reg_config = ctrl_reg_config | A32V_SPI_CTR_CPOL if spi_mode in [2,3] else ctrl_reg_config
     ctrl_reg_config = ctrl_reg_config | A32V_SPI_CTR_CPHA if spi_mode in [1,3] else ctrl_reg_config
     ctrl_reg_config = ctrl_reg_config | A32V_SPI_CTR_ENABLE
+    ctrl_reg_config = ctrl_reg_config | A32V_SPI_CTR_RESET_FIFO
     await tb.axil_master.write_dword(baseaddr+A32V_SPI_CTR_OFFSET, ctrl_reg_config)
 
     bytes_per_word = int(spi_word_width/8)
@@ -187,7 +197,16 @@ async def run_test(dut, payload_data=None, spi_mode=None, spi_word_width=None, l
             sr = await tb.axil_master.read_dword(baseaddr+A32V_SPI_SR_OFFSET)
             rx_words = n_words
 
+            # configure the interrupt to alert when there is a word in the receive buffer
+            inten_reg_config = 0 | A32V_SPI_INTEN_RX_NOT_EMPTY
+            await tb.axil_master.write_dword(baseaddr+A32V_SPI_INTEN_OFFSET, inten_reg_config)
+
             while (rx_words):
+                # test polling the status register to wait for the first word
+                # then use the interrupt to get the remaining words
+                if rx_words != n_words:
+                    await RisingEdge(dut.irq)
+
                 if ((sr & A32V_SPI_SR_TX_EMPTY_MASK) and (rx_words > 1)):
                     # we have transmitted everything, but we haven't read everything
                     data_received.append(await tb.axil_master.read_dword(baseaddr+A32V_SPI_RXD_OFFSET))
@@ -197,6 +216,7 @@ async def run_test(dut, payload_data=None, spi_mode=None, spi_word_width=None, l
                 if (not(sr & A32V_SPI_SR_RX_EMPTY_MASK)):
                     data_received.append(await tb.axil_master.read_dword(baseaddr+A32V_SPI_RXD_OFFSET))
                     rx_words = rx_words - 1
+
 
             # decrement the number of words we still have to send
             num_remaining_words = num_remaining_words - n_words

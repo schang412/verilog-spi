@@ -15,9 +15,17 @@ allOf:
 properties:
   compatible:
     enum:
-      - axil32verilog,spi-0.1.0
+      - axil32verilog,spi-0.1.1
 
   reg:
+    maxItems: 1
+
+  interrupts:
+    description: |
+      Not specifying an interrupt will force the driver to poll the IP. This can put a lot of
+      traffic on the CPU and AXIL bus. If the interrupt-parent is not specified in the tree, it
+      should also be specified in this cell. Alternatively, interrupts-extended may be used to
+      specify the interrupt.
     maxItems: 1
 
   clocks:
@@ -50,8 +58,27 @@ unevaluatedProperties: false
 examples:
   - |
     spi0: spi@41e00000 {
-      compatible = "axil32verilog,spi-0.1.0";
+      compatible = "axil32verilog,spi-0.1.1";
       reg = <0x41e00000 0x10000>;
+      num-ss-bits = <0x1>;
+      sclk-prescale = <32>;
+      clocks = <&pl_clk>;
+      clock-names = "parent-clk";
+    };
+    spi1: spi@41d00000 {
+      compatible = "axil32verilog,spi-0.1.1";
+      reg = <0x41e00000 0x10000>;
+      interrupt-parent = <&intc1>;
+      interrupts = <5 0>;
+      num-ss-bits = <0x1>;
+      sclk-prescale = <32>;
+      clocks = <&pl_clk>;
+      clock-names = "parent-clk";
+    };
+    spi2: spi@41f00000 {
+      compatible = "axil32verilog,spi-0.1.1";
+      reg = <0x41e00000 0x10000>;
+      interrupts-extended = <&intc1 5 1>;
       num-ss-bits = <0x1>;
       sclk-prescale = <32>;
       clocks = <&pl_clk>;

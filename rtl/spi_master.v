@@ -78,6 +78,7 @@ assign mosi_t = mosi_reg;
 reg rx_overrun_error_reg = 0;
 reg active = 0;
 assign bus_active = (master_state != MASTER_STATE_IDLE);
+assign rx_overrun_error = rx_overrun_error_reg;
 
 // lsb first
 reg lsb_first_buff;

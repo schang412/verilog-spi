@@ -22,6 +22,8 @@ module spi_master_axil #
     input  wire                         clk,
     input  wire                         rst,
 
+    output wire                         irq,
+
     /*
      * Host interface
      */
@@ -66,7 +68,7 @@ Identifies that this register section contains an SPI block: 0x294E_C100
 -----------------------------------------------------------------------
 Revision Register: (AXIL_ADDR_BASE + 0x04) (RO)
 
-Identifies the revision of the HDL code: 0x0000_0100
+Identifies the revision of the HDL code: 0x0000_0110
 
 
 -----------------------------------------------------------------------
@@ -91,7 +93,8 @@ SPI Control Register: (AXIL_ADDR_BASE + 0x20) (RW)
 
 Bit 31-16: SPI clock prescale (default 4)
 Bit  15-8: SPI word width (default 8, max=32)
-Bit   7-6: Reserved
+Bit     7: Reserved
+Bit     6: Reset the FIFO
 Bit     5: Manual Slave Select Assertion (default 1; 0=slave select asserted by core logic)
 Bit     4: LSB First (default 0; 0=MSB first, 1=LSB first)
 Bit     3: CPOL (default 0; 0=SCLK idle low, 1=SCLK Idle High)
@@ -132,6 +135,31 @@ SPI Data Receive Register: (AXIL_ADDR_BASE + 0x34) (RO)
 
 The data to received, aligned to the right with the MSB first. This does not depend
 on LSB first transfer selection.
+
+-----------------------------------------------------------------------
+SPI Interrupt Status Register: (AXIL_ADDR_BASE + 0x40) (RW1C)
+
+Write 1 to clear this register. Read this register after an IRQ pulse to determine
+which enabled interrupt event was triggered.
+
+Bit  31-4: Reserved
+Bit     3: RX_OVERRUN
+Bit     2: RX_FULL
+Bit     1: RX_NOT_EMPTY
+Bit     0: TX_EMPTY
+
+-----------------------------------------------------------------------
+SPI Interrupt Enable Register: (AXIL_ADDR_BASE + 0x44) (RW)
+
+Set bit to 1 to control enable the interrupt event to trigger an IRQ pulse.
+
+Default: 0
+
+Bit  31-4: Reserved
+Bit     3: RX_OVERRUN
+Bit     2: RX_FULL
+Bit     1: RX_NOT_EMPTY
+Bit     0: TX_EMPTY
 
 */
 
@@ -189,6 +217,25 @@ reg [15:0] spi_clock_prescale_reg = 16'd4;
 reg [7:0] spi_word_width_reg = 7'd8;
 
 reg [31:0] slave_select_reg = {32{1'b1}};
+
+// SPI Interrupt Enable Register
+reg irq_en_rx_overrun = 0;
+reg irq_en_rx_full = 0;
+reg irq_en_rx_not_empty = 0;
+reg irq_en_tx_empty = 0;
+
+// SPI Interrupt Status Register
+wire [3:0] irq_status_summary;
+reg  [3:0] irq_status_summary_last = 0;
+reg irq_status_rx_overrun = 0;
+reg irq_status_rx_full = 0;
+reg irq_status_rx_not_empty = 0;
+reg irq_status_tx_empty = 0;
+
+wire rx_overrun_error;
+
+assign irq_status_summary = {irq_status_rx_overrun, irq_status_rx_full, irq_status_rx_not_empty, irq_status_tx_empty};
+assign irq = (|(irq_status_summary & ~irq_status_summary_last) & spe_reg);
 
 generate
     if (FIFO_EXIST) begin
@@ -299,7 +346,25 @@ always @(posedge clk) begin
         spi_word_width_reg <= 8'd8;
         spi_clock_prescale_reg <= 16'd4;
 
+        irq_status_rx_overrun <= 0;
+        irq_status_rx_full <= 0;
+        irq_status_rx_not_empty <= 0;
+        irq_status_tx_empty <= 0;
+
     end else begin
+        // check for interrupt events
+        irq_status_summary_last <= irq_status_summary;
+        irq_status_rx_overrun <= irq_en_rx_overrun ? rx_overrun_error : 0;
+        irq_status_rx_not_empty <= irq_en_rx_not_empty ? axis_read_tvalid : 0;
+        if (FIFO_EXIST) begin
+            irq_status_tx_empty <= irq_en_tx_empty ? ~axis_write_tready : 0;
+            irq_status_rx_full <= irq_en_rx_full ? ~axis_read_ext_tready : 0;
+        end else begin
+            irq_status_tx_empty <= irq_en_tx_empty ? axis_write_ext_tvalid : 0;
+            irq_status_rx_full <= irq_en_rx_full ? axis_read_tvalid : 0;
+        end
+
+        // set defaults
         fifo_rst <= 1'b0;
         axis_write_tvalid <= axis_write_tvalid_next;
 
@@ -319,8 +384,8 @@ always @(posedge clk) begin
 
                 // SPI Control Register
                 AXIL_ADDR_BASE+8'h20: begin
-                    fifo_rst <= 1'b1;
                     if (s_axil_wstrb[0]) begin
+                        fifo_rst        <= s_axil_wdata[6];
                         mssa_reg        <= s_axil_wdata[5];
                         lsb_first_reg   <= s_axil_wdata[4];
                         cpol_reg        <= s_axil_wdata[3];
@@ -373,6 +438,27 @@ always @(posedge clk) begin
                     end
                 end
 
+                // SPI Interrupt Status Register
+                AXIL_ADDR_BASE+8'h40: begin
+                    if (s_axil_wdata == 32'd01) begin
+                        irq_status_rx_overrun <= 0;
+                        irq_status_rx_full <= 0;
+                        irq_status_rx_not_empty <= 0;
+                        irq_status_tx_empty <= 0;
+                        irq_status_summary_last <= 0;
+                    end
+                end
+
+                // SPI Interrupt Enable Register
+                AXIL_ADDR_BASE+8'h44: begin
+                    if (s_axil_wstrb[0]) begin
+                        irq_en_rx_overrun <= s_axil_wdata[3];
+                        irq_en_rx_full <= s_axil_wdata[2];
+                        irq_en_rx_not_empty <= s_axil_wdata[1];
+                        irq_en_tx_empty <= s_axil_wdata[0];
+                    end
+                end
+
                 default: ;
             endcase
         end // do_axil_write
@@ -413,7 +499,7 @@ always @(posedge clk) begin
                 AXIL_ADDR_BASE+8'h00: s_axil_rdata_reg <= 32'h294EC100;
 
                 // Revision Register
-                AXIL_ADDR_BASE+8'h04: s_axil_rdata_reg <= 32'h00000100;
+                AXIL_ADDR_BASE+8'h04: s_axil_rdata_reg <= 32'h00000110;
 
                 // Pointer Register
                 AXIL_ADDR_BASE+8'h08: s_axil_rdata_reg <= RB_NEXT_PTR;
@@ -453,6 +539,22 @@ always @(posedge clk) begin
                 AXIL_ADDR_BASE+8'h34: begin
                     s_axil_rdata_reg <= axis_read_tdata;
                     axis_read_tready <= axis_read_tvalid;
+                end
+
+                // SPI Interrupt Status Register
+                AXIL_ADDR_BASE+8'h40: begin
+                    s_axil_rdata_reg[3] <= irq_status_rx_overrun;
+                    s_axil_rdata_reg[2] <= irq_status_rx_full;
+                    s_axil_rdata_reg[1] <= irq_status_rx_not_empty;
+                    s_axil_rdata_reg[0] <= irq_status_tx_empty;
+                end
+
+                // SPI Interrupt Enable Register
+                AXIL_ADDR_BASE+8'h44: begin
+                    s_axil_rdata_reg[3] <= irq_en_rx_overrun;
+                    s_axil_rdata_reg[2] <= irq_en_rx_full;
+                    s_axil_rdata_reg[1] <= irq_en_rx_not_empty;
+                    s_axil_rdata_reg[0] <= irq_en_tx_empty;
                 end
 
                 default: ;
@@ -533,7 +635,7 @@ spi_master #(
     .m_axis_tready   (axis_read_ext_tready),
 
     // Status
-    .rx_overrun_error(),
+    .rx_overrun_error(rx_overrun_error),
     .bus_active      (spi_bus_active)
 );
 

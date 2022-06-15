@@ -23,7 +23,7 @@
 #define AXIL32_VERILOG_SPI_NAME         "axil32-verilog_spi"
 
 #define A32V_SPI_ID                     0x294EC100
-#define A32V_SPI_REV                    0x00000100
+#define A32V_SPI_REV                    0x00000110
 
 #define A32V_SPI_ID_OFFSET              0x00 // Interface ID Register
 #define A32V_SPI_REV_OFFSET             0x04 // Interface Revision Register
@@ -39,6 +39,7 @@
 #define A32V_SPI_CTR_CPOL               0x08
 #define A32V_SPI_CTR_LSB_FIRST          0x10
 #define A32V_SPI_CTR_MANUAL_SSELECT     0x20
+#define A32V_SPI_CTR_RESET_FIFO         0x40
 #define A32V_SPI_CTR_MODE_MASK          (A32V_SPI_CTR_CPHA | A32V_SPI_CTR_CPOL | A32V_SPI_CTR_LSB_FIRST | A32V_SPI_CTR_LOOP)
 
 #define A32V_SPI_CTR_WORD_WIDTH_OFFSET  8
@@ -58,6 +59,13 @@
 #define A32V_SPI_TXD_OFFSET         0x30 // Data Transmit Register
 #define A32V_SPI_RXD_OFFSET         0x34 // Data Receive Register
 
+#define A32V_SPI_INTER_OFFSET       0x44 // Interrupt Enable Register
+#define A32V_SPI_INTSR_OFFSET       0x40 // Interrupt Status Register
+#define A32V_SPI_INT_RX_OVERRUN     0x08
+#define A32V_SPI_INT_RX_FULL        0x04
+#define A32V_SPI_INT_RX_NOT_EMPTY   0x02
+#define A32V_SPI_INT_TX_EMPTY       0x01
+
 struct axil32v_spi {
     struct spi_bitbang bitbang;
     struct completion done;
@@ -65,15 +73,17 @@ struct axil32v_spi {
 
     struct device *dev;
 
+    int irq;
+
     u8 *rx_ptr;
     const u8 *tx_ptr;
 
-    u32 base_freq;
-
     u8 bytes_per_word;
+    u32 base_freq;
     int sclk_prescale;
     int buffer_size;  /* buffer size in words */
     u32 cs_inactive;  /* level of the CS pins when inactive */
+
     u32 (*read_fn)(void __iomem *);
     void (*write_fn)(u32, void __iomem *);
 };
@@ -237,11 +247,31 @@ static int a32v_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 {
     struct axil32v_spi *a32v_spi = spi_master_get_devdata(spi->master);
     int remaining_words;
+    bool use_irq = false;
+    u32 cr = 0;
 
     // note that we don't send unless we have a full word
     a32v_spi->tx_ptr = t->tx_buf;
     a32v_spi->rx_ptr = t->rx_buf;
     remaining_words = t->len / a32v_spi->bytes_per_word;
+
+    // configure the interrupt if avaiiable
+    if (a32v_spi->irq >= 0 && remaining_words > a32v_spi->buffer_size) {
+        use_irq = true;
+
+        // disable the spi interface to prevent spurious irqs (since tx is initially empty)
+        // this will stall the ip until we enable it
+        cr = a32v_spi->read_fn(a32v_spi->regs + A32V_SPI_CTR_OFFSET);
+        a32v_spi->write_fn(cr ^ A32V_SPI_CTR_ENABLE, a32v_spi->regs + A32V_SPI_CTR_OFFSET);
+
+        // clear old irqs
+        a32v_spi->write_fn(1, a32v_spi->regs + A32V_SPI_INTSR_OFFSET);
+
+        // enable the interrupts
+        a32v_spi->write_fn(A32V_SPI_INT_TX_EMPTY, a32v_spi->regs + A32V_SPI_INTER_OFFSET);
+
+        reinit_completion(&a32v_spi->done);
+    }
 
     while (remaining_words) {
         int n_words, tx_words, rx_words;
@@ -254,8 +284,18 @@ static int a32v_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
         while(tx_words--)
             a32v_spi_tx(a32v_spi);
 
-        // check the status register
-        sr = a32v_spi->read_fn(a32v_spi->regs + A32V_SPI_SR_OFFSET);
+        if (use_irq) {
+            // enable the spi interface to begin transfers
+            a32v_spi->write_fn(cr, a32v_spi->regs + A32V_SPI_CTR_OFFSET);
+
+            wait_for_completion(&a32v_spi->done);
+
+            // stall the ip again
+            a32v_spi->write_fn(cr ^ A32V_SPI_CTR_ENABLE, a32v_spi->regs + A32V_SPI_CTR_OFFSET);
+            sr = A32V_SPI_SR_TX_EMPTY_MASK;
+        } else {
+            sr = a32v_spi->read_fn(a32v_spi->regs + A32V_SPI_SR_OFFSET);
+        }
 
         // read the data from the rx fifo
         rx_words = n_words;
@@ -288,7 +328,30 @@ static int a32v_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 
         remaining_words -= n_words;
     }
+
+    if (use_irq) {
+        a32v_spi->write_fn(0, a32v_spi->regs + A32V_SPI_INTER_OFFSET);
+        a32v_spi->write_fn(cr, a32v_spi->regs + A32V_SPI_CTR_OFFSET);
+    }
+
     return t->len;
+}
+
+static irqreturn_t a32v_spi_irq_callback(int irq, void *dev_id) {
+    struct axil32v_spi *a32v_spi = dev_id;
+    u32 interrupt_status_reg;
+
+    // read and clear the interrupt status register
+    interrupt_status_reg = a32v_spi->read_fn(a32v_spi->regs + A32V_SPI_INTSR_OFFSET);
+    a32v_spi->write_fn(1, a32v_spi->regs + A32V_SPI_INTSR_OFFSET);
+
+    // check if the interrupt was for a transmission complete event
+    if (interrupt_status_reg & A32V_SPI_INT_TX_EMPTY) {
+        complete(&a32v_spi->done);
+        return IRQ_HANDLED;
+    }
+
+    return IRQ_NONE;
 }
 
 static int a32v_spi_find_buffer_size(struct axil32v_spi *a32v_spi)
@@ -330,7 +393,7 @@ static int a32v_spi_verify_idrev(struct axil32v_spi *a32v_spi)
 }
 
 static const struct of_device_id axil32v_spi_of_match[] = {
-    { .compatible = "axil32verilog,spi-0.1.0", },
+    { .compatible = "axil32verilog,spi-0.1.1", },
     {}
 };
 MODULE_DEVICE_TABLE(of, axil32v_spi_of_match);
@@ -449,8 +512,22 @@ static int a32v_spi_probe(struct platform_device *pdev)
 
     ret = a32v_spi_verify_idrev(a32v_spi);
     if (ret) {
-        dev_err(&pdev->dev, "stopping driver (unmatched ip/driver id)");
+        dev_err(&pdev->dev, "Stopping driver (unmatched ip/driver id)");
         goto fail;
+    }
+
+    // setup the interrupts (if defined in device tree)
+    a32v_spi->irq = platform_get_irq(pdev, 0);
+    if(a32v_spi->irq >= 0) {
+        dev_info(&pdev->dev, "Interrupt defined, binding to %d", a32v_spi->irq);
+        ret = devm_request_irq(&pdev->dev, a32v_spi->irq, a32v_spi_irq_callback, 0,
+                    dev_name(&pdev->dev), a32v_spi);
+        if (ret) {
+            dev_err(&pdev->dev, "Failed to register SPI Interrupt");
+            goto fail;
+        }
+    } else {
+        dev_info(&pdev->dev, "Interrupt not defined, will operate in polling mode");
     }
 
     // initialize the SPI Controller
@@ -481,6 +558,9 @@ static int a32v_spi_remove(struct platform_device *pdev)
     struct axil32v_spi *a32v_spi = spi_master_get_devdata(master);
 
     spi_bitbang_stop(&a32v_spi->bitbang);
+
+    // disable the interrupts
+    a32v_spi->write_fn(0, a32v_spi->regs + A32V_SPI_INTER_OFFSET);
 
     spi_master_put(a32v_spi->bitbang.master);
 
