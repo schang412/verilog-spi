@@ -585,10 +585,12 @@ assign spi_mosi_t = (spe_reg) ? mosi_t_int : 1'b0;
 assign spi_sclk_o = (spe_reg) ? sclk_o_int : 1'b0;
 assign spi_sclk_t = (spe_reg) ? sclk_t_int : 1'b0;
 
+integer i;
+    
 always @* begin
     // set slave select (prevent multiple slaves being low)
     spi_ncs_reg = {NUM_SS_BITS{1'b1}};
-    for(integer i=0; i < NUM_SS_BITS; i=i+1) begin
+    for(i=0; i < NUM_SS_BITS; i=i+1) begin
         if (slave_select_reg[i] == 0) begin
             spi_ncs_reg = {NUM_SS_BITS{1'b1}};
             spi_ncs_reg[i] = (mssa_reg) ? 0 : ~spi_bus_active;
