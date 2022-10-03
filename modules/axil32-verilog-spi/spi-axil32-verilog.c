@@ -71,6 +71,7 @@ struct axil32v_spi {
     struct completion done;
     void __iomem    *regs;
 
+    struct clk *parent_clk;
     struct device *dev;
 
     int irq;
@@ -79,7 +80,6 @@ struct axil32v_spi {
     const u8 *tx_ptr;
 
     u8 bytes_per_word;
-    u32 base_freq;
     int sclk_prescale;
     int buffer_size;  /* buffer size in words */
     u32 cs_inactive;  /* level of the CS pins when inactive */
@@ -173,7 +173,7 @@ static void a32v_spi_init_hw(struct axil32v_spi *a32v_spi)
         regs_base + A32V_SPI_RESETR_OFFSET);
 
     /* Deselect the slave (if selected) */
-    a32v_spi->write_fn(0xffff, regs_base + A32V_SPI_SSR_OFFSET);
+    a32v_spi->write_fn(a32v_spi->cs_inactive, regs_base + A32V_SPI_SSR_OFFSET);
 
     // setup the clock frequency
     cr = 0;
@@ -246,9 +246,21 @@ static int a32v_spi_setup_transfer(struct spi_device *spi, struct spi_transfer *
 static int a32v_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 {
     struct axil32v_spi *a32v_spi = spi_master_get_devdata(spi->master);
+    u16 sclk_prescale_calculated;
     int remaining_words;
     bool use_irq = false;
     u32 cr = 0;
+
+    // the hardware only supports a divisor that is a multiple of 4, so round the divisor up
+    // the resulting speed is <= requested speed
+    // only change the prescale if needed
+    sclk_prescale_calculated = 4 * DIV_ROUND_UP(clk_get_rate(a32v_spi->parent_clk), 4 * t->speed_hz);
+    if (sclk_prescale_calculated != a32v_spi->sclk_prescale) {
+        a32v_spi->sclk_prescale = sclk_prescale_calculated;
+        cr = a32v_spi->read_fn(a32v_spi->regs + A32V_SPI_CTR_OFFSET);
+        cr = (cr & ~A32V_SPI_CTR_CLKPRSCL_MASK) | (a32v_spi->sclk_prescale << A32V_SPI_CTR_CLKPRSCL_OFFSET);
+        a32v_spi->write_fn(cr, a32v_spi->regs + A32V_SPI_CTR_OFFSET);
+    }
 
     // note that we don't send unless we have a full word
     a32v_spi->tx_ptr = t->tx_buf;
@@ -404,7 +416,7 @@ static int a32v_spi_probe(struct platform_device *pdev)
     struct a32vspi_platform_data *pdata;
     struct resource *res;
 
-    int ret, num_cs = 0, sclk_prescale = 0, freq = 0;
+    int ret, num_cs = 0, default_sclk_prescale = 0, freq = 0;
     struct spi_master *master;
     struct clk *spi_parent_clk;
     
@@ -414,17 +426,17 @@ static int a32v_spi_probe(struct platform_device *pdev)
     pdata = dev_get_platdata(&pdev->dev);
     if (pdata) {
         num_cs = pdata->num_chipselect;
-        sclk_prescale = pdata->sclk_prescale;
+        default_sclk_prescale = pdata->sclk_prescale;
     } else {
         of_property_read_u32(pdev->dev.of_node, "num-ss-bits", &num_cs);
-        of_property_read_u32(pdev->dev.of_node, "sclk-prescale", &sclk_prescale);
+        of_property_read_u32(pdev->dev.of_node, "sclk-prescale", &default_sclk_prescale);
     }
 
-    if (!sclk_prescale) {
+    if (!default_sclk_prescale) {
         dev_err(&pdev->dev, "Missing slave select configuration data\n");
         return -EINVAL;
     }
-    if (sclk_prescale % 4 != 0) {
+    if (default_sclk_prescale % 4 != 0) {
         dev_err(&pdev->dev, "Invalid sclk prescale value (must be divisible by 4)\n");
         return -EINVAL;
     }
@@ -437,15 +449,6 @@ static int a32v_spi_probe(struct platform_device *pdev)
         dev_err(&pdev->dev, "Invalid number of spi slaves\n");
         return -EINVAL;
     }
-
-    // get the parent clock and compute the operating frequency
-    spi_parent_clk = devm_clk_get(&pdev->dev, "parent-clk");
-    if (IS_ERR(spi_parent_clk)) {
-	dev_err(&pdev->dev, "Failed to get parent-clk");
-	ret = PTR_ERR(spi_parent_clk);
-    	goto fail;
-    }
-    freq = clk_get_rate(spi_parent_clk);
 
     master = spi_alloc_master(&pdev->dev, sizeof(struct axil32v_spi));
     if (!master)
@@ -461,14 +464,11 @@ static int a32v_spi_probe(struct platform_device *pdev)
     master->bus_num = pdev->id;
     master->dev.of_node = pdev->dev.of_node;
     master->num_chipselect = num_cs;
-    master->min_speed_hz = freq / sclk_prescale;
-    master->max_speed_hz = freq / sclk_prescale;
 
     // point to the function calls for a transfer
     a32v_spi = spi_master_get_devdata(master);
     a32v_spi->cs_inactive = 0xffffffff;
-    a32v_spi->base_freq = freq;
-    a32v_spi->sclk_prescale = sclk_prescale;
+    a32v_spi->sclk_prescale = default_sclk_prescale;
     a32v_spi->bitbang.master = master;
     a32v_spi->bitbang.chipselect = a32v_spi_chipselect;
     a32v_spi->bitbang.setup_transfer = a32v_spi_setup_transfer;
@@ -486,7 +486,27 @@ static int a32v_spi_probe(struct platform_device *pdev)
         goto fail;
     }
     dev_info(&pdev->dev, "at %pR", res);
-    
+
+    // get the parent clock and compute the operating frequency
+    spi_parent_clk = devm_clk_get(&pdev->dev, "parent-clk");
+    if (IS_ERR(spi_parent_clk)) {
+        dev_err(&pdev->dev, "Failed to get parent-clk\n");
+        ret = PTR_ERR(spi_parent_clk);
+        goto fail;
+    }
+    freq = clk_get_rate(spi_parent_clk);
+    // 16-bit prescalar must be a multiple of 4
+    master->min_speed_hz = freq / 65532;
+    master->max_speed_hz = freq / 4;
+
+    // try to prepare the clock
+    ret = clk_prepare(spi_parent_clk);
+    if (ret) {
+        dev_err(&pdev->dev, "Failed to prepare the parent clock\n");
+        goto fail;
+    }
+    a32v_spi->parent_clk = spi_parent_clk;
+
     /**
      * Detect endianess on the IP by setting a bit in the control register.
      * Detection must be done before reset is sent, otherwise the reset
@@ -513,7 +533,7 @@ static int a32v_spi_probe(struct platform_device *pdev)
     ret = a32v_spi_verify_idrev(a32v_spi);
     if (ret) {
         dev_err(&pdev->dev, "Stopping driver (unmatched ip/driver id)");
-        goto fail;
+        goto clk_unprepare_parent_clk;
     }
 
     // setup the interrupts (if defined in device tree)
@@ -524,7 +544,7 @@ static int a32v_spi_probe(struct platform_device *pdev)
                     dev_name(&pdev->dev), a32v_spi);
         if (ret) {
             dev_err(&pdev->dev, "Failed to register SPI Interrupt");
-            goto fail;
+            goto clk_unprepare_parent_clk;
         }
     } else {
         dev_info(&pdev->dev, "Interrupt not defined, will operate in polling mode");
@@ -536,7 +556,7 @@ static int a32v_spi_probe(struct platform_device *pdev)
     ret = spi_bitbang_start(&a32v_spi->bitbang);
     if (ret) {
         dev_err(&pdev->dev, "spi_bitbang_start FAILED\n");
-        goto fail;
+        goto clk_unprepare_parent_clk;
     }
 
     if (pdata) {
@@ -547,6 +567,8 @@ static int a32v_spi_probe(struct platform_device *pdev)
     platform_set_drvdata(pdev, master);
     return 0;
 
+clk_unprepare_parent_clk:
+    clk_unprepare(a32v_spi->parent_clk);
 fail:
     spi_master_put(master);
     return ret;
@@ -561,6 +583,8 @@ static int a32v_spi_remove(struct platform_device *pdev)
 
     // disable the interrupts
     a32v_spi->write_fn(0, a32v_spi->regs + A32V_SPI_INTER_OFFSET);
+
+    clk_disable_unprepare(a32v_spi->parent_clk);
 
     spi_master_put(a32v_spi->bitbang.master);
 
